@@ -1,0 +1,13 @@
+# 虚拟环境文件夹
+agent_env/
+
+# 密钥配置文件
+.env
+
+# 日志文件
+*.log
+app.log
+
+# Python缓存垃圾文件
+__pycache__/
+*.pyc
