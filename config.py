@@ -18,12 +18,12 @@ class ConfigManager:
             logger.info("API_KEY 已成功加载。")
             logger.debug(f"API_KEY: {self.api_key}")
 
-        self.db_host = os.getenv("DB_HOST")
-        if self.db_host is None:
-            logger.warning("DB_HOST 未设置，请检查 .env 文件或环境变量。")
+        self.api_url = os.getenv("API_URL")
+        if self.api_url is None:
+            logger.warning("API_URL 未设置，请检查 .env 文件或环境变量。")
         else:
-            logger.info("DB_HOST 已成功加载。")
-            logger.debug(f"DB_HOST: {self.db_host}")
+            logger.info("API_URL 已成功加载。")
+            logger.debug(f"API_URL: {self.api_url}")
         self.log_level = os.getenv("LOG_LEVEL", "INFO")  # 默认日志级别为 INFO
     def get_config(self):
         """
@@ -31,6 +31,6 @@ class ConfigManager:
         """
         return {
             "API_KEY": self.api_key,
-            "DB_HOST": self.db_host,
+            "API_URL": self.api_url,
             "LOG_LEVEL": self.log_level
         }

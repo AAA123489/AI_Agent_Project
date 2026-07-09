@@ -1,14 +1,27 @@
 # main.py
 # 导入日志模块
 from logger import logger
-from config import ConfigManager
+import asyncio
+import llm_client
 
+async def main():
+    logger.info("开始发送请求到 LLM 客户端")  # 记录开始发送请求的日志
+
+    prompts = [
+        "1＋1等于多少？",
+        "1＋2等于多少？",
+        "1＋3等于多少？"
+    ]
+    results = await asyncio.gather(
+        llm_client.call_llm_client(prompts[0]),
+        llm_client.call_llm_client(prompts[1]),
+        llm_client.call_llm_client(prompts[2])
+    )
+    for i, result in enumerate(results):
+        if "error" in result:
+            logger.error(f"请求 {i+1} 失败: {result['message']}")  # 记录请求失败的日志
+        else:
+            logger.info(f"请求 {i+1} 成功，响应数据: {result}")  # 记录请求成功的日志
+    logger.info("所有请求已完成")  # 记录所有请求已完成的日志
 if __name__ == "__main__":
-    try:
-        config = ConfigManager()
-        logger.info("===== 程序开始运行 =====")
-        config_get = config.get_config()
-        logger.info(f"当前配置参数: {config_get}")
-        logger.info("===== 程序运行结束 =====")
-    except Exception as e:
-        logger.error(f"程序运行时发生错误: {e}")
+    asyncio.run(main())
