@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 import os
-from logger import logger
+from src.logger import logger
 
 # 尝试从 .env 文件中加载配置
 load_dotenv()
@@ -9,7 +9,7 @@ class ConfigManager:
     """
     配置管理器类，用于读取和管理配置文件中的参数。
     """
-    def __init__(self):
+    def __init__(self) -> None:
         # 从环境变量中获取配置参数
         self.api_key = os.getenv("API_KEY")
         if self.api_key is None:
@@ -25,7 +25,7 @@ class ConfigManager:
             logger.info("API_URL 已成功加载。")
             logger.debug(f"API_URL: {self.api_url}")
         self.log_level = os.getenv("LOG_LEVEL", "INFO")  # 默认日志级别为 INFO
-    def get_config(self):
+    def get_config(self) -> dict[str, str | None]:
         """
         返回当前的配置参数。
         """

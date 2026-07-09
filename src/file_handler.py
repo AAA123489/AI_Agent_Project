@@ -1,5 +1,5 @@
 # file_handler.py
-from logger import logger
+from src.logger import logger
 
 def read_text_file(file_path: str) -> str:
     try:

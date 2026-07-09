@@ -1,10 +1,11 @@
 # main.py
 # 导入日志模块
-from logger import logger
+from src.logger import logger
 import asyncio
-import llm_client
+from src import llm_client  # 导入 llm_client 模块，用于调用 LLM 客户端的函数  绝对导入
 
-async def main():
+
+async def main() -> None:
     logger.info("开始发送请求到 LLM 客户端")  # 记录开始发送请求的日志
 
     prompts = [
