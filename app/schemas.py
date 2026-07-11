@@ -1,10 +1,6 @@
 #此文件专门用来放 Pydantic 模型
 from pydantic import BaseModel,Field
 
-from fastapi import FastAPI
-
-app = FastAPI()
-
 class ChatRequest(BaseModel):
     message : str = Field(
         min_length = 2,

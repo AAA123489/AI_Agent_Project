@@ -4,7 +4,9 @@ file_handler 模块
 包含用于读取文本文件的辅助函数。模块对外提供 `read_text_file`，
 该函数以安全的方式读取文件内容并通过 `logger` 记录成功或错误信息。
 """
-from src.logger import logger  # 项目内统一的日志实例，用于记录信息、警告和错误
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def read_text_file(file_path: str) -> str:

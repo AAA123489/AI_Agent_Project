@@ -1,6 +1,8 @@
 from dotenv import load_dotenv  # 用于从 .env 文件加载环境变量
 import os  # 访问操作系统环境变量与路径
-from src.logger import logger  # 导入项目内的 logger 实例用于日志记录
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 尝试从 .env 文件中加载配置到环境变量
 load_dotenv()  # 在当前工作目录查找 .env 文件并将其中的键值对加载到 os.environ
