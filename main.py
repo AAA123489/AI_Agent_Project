@@ -1,14 +1,26 @@
 import src.logger
+from fastapi.middleware.cors import CORSMiddleware
 from src.config import ConfigManager
 from src.llm_client import call_llm_client
 from app.schemas import ChatRequest
-from fastapi import FastAPI
+from fastapi import FastAPI,Depends
 import uvicorn
 import fastapi_cdn_host
 import logging
+from dependencies import verify_api_key
+
 
 logger = logging.getLogger(__name__)
+
 app = FastAPI(title = "AI-Chat-Api")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins = ["http://localhost:3000"],
+    allow_methods = ["*"],
+    allow_headers = ["*"]
+)
+
 config = ConfigManager()
 
 fastapi_cdn_host.patch_docs(app)
@@ -18,9 +30,8 @@ async def health():
     return {"status": "ok", "version": "1.0.0"}
 
 @app.post("/chat")
-async def chat(data:ChatRequest):
+async def chat(data:ChatRequest,api_key: str = Depends(verify_api_key)):
     logger.info(f"收到请求: user_id={data.user_id}, message={data.message[:50]}...")
-    api_key = config.api_key
     api_url = config.api_url
 
     try:
