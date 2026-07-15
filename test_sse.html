@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>SSE 流水测试</title>
+    <style>
+        body {
+            font-family:"Microsoft YaHei",sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding:20px;
+        }
+        #output {
+            min-height: 100px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 16px; 
+            margin: 16px 0;
+            white-space: pre-wrap;
+            background: #f9f9f9;
+        }
+        button {
+            padding: 10px 24px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        input {
+            padding: 10px;
+            width: 300px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <h2>SSE 流式测试</h2>
+    <input id="msg" value="你好" placeholder="输入信息"/>
+    <button id="btn">发送请求</button>
+    <div id="output"></div>
+
+    <script>
+        document.getElementById('btn').onclick = async () =>{
+            const msg = document.getElementById('msg').value;
+            const output = document.getElementById('output');
+            output.textContent = ''; //清空
+
+            const res = await fetch('http://127.0.0.1:8000/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': 'sk-4c7f3a0b659541888fd87e5f66c7aa52'
+                },
+                body: JSON.stringify({ user_id: '123', message: msg })
+            });
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const text = decoder.decode(value, { stream: true });
+                output.textContent += text;
+            }
+
+        }
+    </script>
+</body>
+</html>

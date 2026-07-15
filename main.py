@@ -8,15 +8,36 @@ import uvicorn
 import fastapi_cdn_host
 import logging
 from dependencies import verify_api_key
+import asyncio
+from starlette.responses import StreamingResponse
 
 
 logger = logging.getLogger(__name__)
 
+async def generate_stream(prompt):
+
+    '''
+    异步生成器，模拟大模型流式输出
+    '''
+    
+    response_text = f"你好，我是AI助手！关于你提到的{prompt}我认为很有趣"
+    try:
+        await asyncio.sleep(0.1)
+        for chat in  response_text:
+            yield f"data: {chat}\n\n"
+            await asyncio.sleep(0.1)
+        yield "data: [DONE]\n\n"
+        logger.info("✅ 流式生成完毕！")
+    except asyncio.CancelledError:
+        logger.info(f"客户端断开")
+    finally:
+        logger.info(f"流结束了")
+        
 app = FastAPI(title = "AI-Chat-Api")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = ["http://localhost:3000"],
+    allow_origins = ["http://localhost:3000","null"],
     allow_methods = ["*"],
     allow_headers = ["*"]
 )
@@ -31,28 +52,10 @@ async def health():
 
 @app.post("/chat")
 async def chat(data:ChatRequest,api_key: str = Depends(verify_api_key)):
-    logger.info(f"收到请求: user_id={data.user_id}, message={data.message[:50]}...")
-    api_url = config.api_url
-
-    try:
-        result = await call_llm_client(data.message, api_key, api_url)
-        if result.get("error"):
-            logger.error(f"LLM 调用失败: user_id={data.user_id}, error={result.get('message')}")
-            return {"reply":"抱歉，服务器出错了"}
-        reply_text = ""
-        for block in result.get("content", []):
-            if block.get("type") == "text":
-                reply_text += block.get("text", "")
-
-        if not reply_text:
-            logger.warning(f"LLM 未返回文本内容: user_id={data.user_id}")
-            return {"reply": "抱歉，AI 未生成回复"}
-
-        logger.info(f"请求成功: user_id={data.user_id}")
-        return {"reply": reply_text}
-    except Exception:
-        logger.error(f"未预料的服务器错误: user_id={data.user_id}", exc_info=True)
-        return {"reply": "服务器内部错误"}
+    return StreamingResponse(
+        generate_stream(data.message),
+        media_type="text/event-stream"
+    )
 
 
 
