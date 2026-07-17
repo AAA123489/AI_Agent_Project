@@ -1,7 +1,7 @@
 import src.logger
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import ConfigManager
-from src.llm_client import call_llm_client
+from src.llm_client import call_llm_client,call_llm_stream
 from app.schemas import ChatRequest
 from fastapi import FastAPI,Depends
 import uvicorn
@@ -10,28 +10,37 @@ import logging
 from dependencies import verify_api_key
 import asyncio
 from starlette.responses import StreamingResponse
+import json
 
 
 logger = logging.getLogger(__name__)
 
-async def generate_stream(prompt):
-
-    '''
-    异步生成器，模拟大模型流式输出
-    '''
-    
-    response_text = f"你好，我是AI助手！关于你提到的{prompt}我认为很有趣"
+async def generate_stream(prompt, api_key, api_url):
     try:
-        await asyncio.sleep(0.1)
-        for chat in  response_text:
-            yield f"data: {chat}\n\n"
-            await asyncio.sleep(0.1)
-        yield "data: [DONE]\n\n"
-        logger.info("✅ 流式生成完毕！")
+        async for chunk in call_llm_stream(prompt, api_key, api_url):
+            if not chunk.startswith("data:"):
+                continue
+
+            json_str = chunk[6:].strip()
+            if not json_str or json_str == "[DONE]":
+                continue
+
+            try:
+                parsed = json.loads(json_str)
+            except json.JSONDecodeError:
+                logger.warning("过滤出现问题: %s", chunk)
+                continue
+
+            if (
+                parsed.get("type") == "content_block_delta"
+                and parsed.get("delta", {}).get("type") == "text_delta"
+            ):
+                text = parsed["delta"]["text"]
+                yield f"data: {text}\n\n"
     except asyncio.CancelledError:
-        logger.info(f"客户端断开")
+        logger.info("客户端断开")
     finally:
-        logger.info(f"流结束了")
+        logger.info("流结束了")
         
 app = FastAPI(title = "AI-Chat-Api")
 
@@ -53,7 +62,7 @@ async def health():
 @app.post("/chat")
 async def chat(data:ChatRequest,api_key: str = Depends(verify_api_key)):
     return StreamingResponse(
-        generate_stream(data.message),
+        generate_stream(data.message,config.api_key,config.api_url),
         media_type="text/event-stream"
     )
 
