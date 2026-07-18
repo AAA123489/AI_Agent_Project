@@ -42,12 +42,11 @@
             const msg = document.getElementById('msg').value;
             const output = document.getElementById('output');
             output.textContent = ''; //清空
-
             const res = await fetch('http://127.0.0.1:8000/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-API-Key': 'sk-4c7f3a0b659541888fd87e5f66c7aa52'
+                    'X-API-Key' : prompt('请输入 API Key') || ''
                 },
                 body: JSON.stringify({ user_id: '123', message: msg })
             });

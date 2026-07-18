@@ -1,7 +1,7 @@
 import src.logger
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import ConfigManager
-from src.llm_client import call_llm_client,call_llm_stream
+from src.llm_client import call_llm_stream
 from app.schemas import ChatRequest
 from fastapi import FastAPI,Depends
 import uvicorn

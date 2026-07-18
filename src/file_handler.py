@@ -1,29 +1,11 @@
-"""
-file_handler 模块
 
-包含用于读取文本文件的辅助函数。模块对外提供 `read_text_file`，
-该函数以安全的方式读取文件内容并通过 `logger` 记录成功或错误信息。
-"""
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 def read_text_file(file_path: str) -> str:
-    """
-    以 UTF-8 编码读取给定路径的文本文件并返回其内容。
 
-    参数:
-        file_path: 要读取的文件路径（字符串）
-
-    返回:
-        文件内容的字符串；如果文件不存在或发生错误，则返回空字符串。
-
-    日志行为:
-        - 成功读取时记录 info 级别日志
-        - 文件未找到时记录 error 级别日志
-        - 其它异常也记录为 error，并返回空字符串
-    """
     try:
         # 以 utf-8 编码打开并读取整个文件内容
         with open(file_path, "r", encoding="utf-8") as f:

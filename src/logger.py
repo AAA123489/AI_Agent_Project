@@ -1,8 +1,4 @@
-"""
-logger 模块
 
-提供项目统一的 `logger` 实例，已配置同时输出到控制台和滚动文件日志。
-"""
 import logging  # 标准库日志模块
 import sys  # 用于获取标准错误输出流
 from logging.handlers import RotatingFileHandler  # 支持按大小轮转的文件处理器

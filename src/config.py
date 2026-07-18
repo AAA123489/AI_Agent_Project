@@ -9,13 +9,6 @@ load_dotenv()  # 在当前工作目录查找 .env 文件并将其中的键值对
 
 
 class ConfigManager:
-    """
-    配置管理器类，用于读取和管理配置参数。
-
-    说明:
-    - 在初始化时从环境变量读取 `API_KEY`、`API_URL` 和 `LOG_LEVEL`。
-    - 如果关键配置缺失，会通过 `logger` 输出警告信息。
-    """
     def __init__(self) -> None:
         # 从环境变量中获取 API_KEY（若不存在则为 None）
         self.api_key = os.getenv("API_KEY")
@@ -35,6 +28,7 @@ class ConfigManager:
 
         # 获取日志级别，若未设置则使用默认值 "INFO"
         self.log_level = os.getenv("LOG_LEVEL", "INFO")  # 默认日志级别为 INFO
+        logging.getLogger().setLevel(self.log_level.upper())
 
     def get_config(self) -> dict[str, str | None]:
         """
