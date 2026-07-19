@@ -24,7 +24,8 @@ def read_text_file(file_path: str) -> str:
 
 
 if __name__ == "__main__":
-    # 当作为脚本直接运行时，执行简单的读取测试（示例目的）
-    # 注意：生产代码不应在模块顶层执行 I/O 操作，这里仅用于本地快速验证
-    res = read_text_file(r"E:\vscode-program\AI_Agent_Project\requirements.txt")
+    # 本地快速验证：读取同目录下的 requirements.txt
+    import os
+    _this_dir = os.path.dirname(os.path.abspath(__file__))
+    res = read_text_file(os.path.join(os.path.dirname(_this_dir), "requirements.txt"))
     print(res)

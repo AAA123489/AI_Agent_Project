@@ -5,22 +5,22 @@ from typing import AsyncGenerator
 logger = logging.getLogger(__name__)
 
 
-async def call_llm_stream(prompt: str, api_key: str, api_url: str) -> AsyncGenerator[str, None]:
-    URL = api_url  # 使用传入的 api_url 参数
+async def call_llm_stream(prompt: str, api_key: str, api_url: str, model_name: str = "deepseek-v4-pro") -> AsyncGenerator[str, None]:
+    """向 LLM 服务发送流式请求，返回标准化 SSE 行流（每条以 data: 开头）。"""
     headers = {
-        "Authorization": f"Bearer {api_key}",  # 使用传入的 api_key 参数
-        "Content-Type": "application/json"  # 设置请求的内容类型为 JSON
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
     }
     payload = {
-        "max_tokens": 1000,  # 设置最大 token 数量为 100
-        "model":"deepseek-v4-pro",  # 从环境变量中获取模型名称
-        "messages":[{"role":"user","content":prompt}] , # 将 prompt 包装为消息格式
-        "stream":True
+        "max_tokens": 1000,
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True
     }
     logger.info(f"发送流式申请：{prompt}")
     async with aiohttp.ClientSession() as session:  # 创建一个异步 HTTP 会话
         try:
-            async with session.post(URL, headers=headers, json=payload) as response:
+            async with session.post(api_url, headers=headers, json=payload) as response:
                 if response.status == 200:  # 如果响应状态码为 200，表示请求成功
                     buffer = ""
                     async for chunk in response.content.iter_any():
@@ -36,8 +36,8 @@ async def call_llm_stream(prompt: str, api_key: str, api_url: str) -> AsyncGener
                                  yield f"data: {data_content}\n\n"
                 else:
                     error_text = await response.text()
-                    yield f'{{"error": true, "status": {response.status}, "message": "{error_text}"}}'
+                    yield f'data: {{"error": true, "status": {response.status}, "message": "{error_text}"}}\n\n'
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            yield f'{{"error": true, "message": "{str(e)}"}}'
+            yield f'data: {{"error": true, "message": "{str(e)}"}}\n\n'
         finally :
             logger.info("LLM 流式连接关闭")

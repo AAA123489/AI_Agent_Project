@@ -1,72 +1,44 @@
-import src.logger
-from fastapi.middleware.cors import CORSMiddleware
-from src.config import ConfigManager
-from src.llm_client import call_llm_stream
-from app.schemas import ChatRequest
-from fastapi import FastAPI,Depends
+"""FastAPI 入口 —— 组装应用、中间件、路由。"""
+import logging
+from contextlib import asynccontextmanager
+
 import uvicorn
 import fastapi_cdn_host
-import logging
-from dependencies import verify_api_key
-import asyncio
-from starlette.responses import StreamingResponse
-import json
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from database import Base, engine
+import src.logger  # noqa: F401  ← 导入即初始化日志配置
+from app.routers.chat import router as chat_router
 
 logger = logging.getLogger(__name__)
 
-async def generate_stream(prompt, api_key, api_url):
-    try:
-        async for chunk in call_llm_stream(prompt, api_key, api_url):
-            if not chunk.startswith("data:"):
-                continue
 
-            json_str = chunk[6:].strip()
-            if not json_str or json_str == "[DONE]":
-                continue
+# ── 生命周期 ──────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用启动时自动创建数据库表。"""
+    Base.metadata.create_all(bind=engine)
+    yield
 
-            try:
-                parsed = json.loads(json_str)
-            except json.JSONDecodeError:
-                logger.warning("过滤出现问题: %s", chunk)
-                continue
 
-            if (
-                parsed.get("type") == "content_block_delta"
-                and parsed.get("delta", {}).get("type") == "text_delta"
-            ):
-                text = parsed["delta"]["text"]
-                yield f"data: {text}\n\n"
-    except asyncio.CancelledError:
-        logger.info("客户端断开")
-    finally:
-        logger.info("流结束了")
-        
-app = FastAPI(title = "AI-Chat-Api")
+# ── 应用实例 ──────────────────────────────────────────────
+app = FastAPI(title="AI-Chat-Api", lifespan=lifespan)
 
+# ── 中间件 ────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = ["http://localhost:3000","null"],
-    allow_methods = ["*"],
-    allow_headers = ["*"]
+    allow_origins=["http://localhost:3000", "null"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-config = ConfigManager()
-
+# ── Swagger CDN ──────────────────────────────────────────
 fastapi_cdn_host.patch_docs(app)
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": "1.0.0"}
-
-@app.post("/chat")
-async def chat(data:ChatRequest,api_key: str = Depends(verify_api_key)):
-    return StreamingResponse(
-        generate_stream(data.message,config.api_key,config.api_url),
-        media_type="text/event-stream"
-    )
+# ── 路由注册 ──────────────────────────────────────────────
+app.include_router(chat_router)
 
 
-
-if __name__ =="__main__":
-    uvicorn.run(app, host="127.0.0.1", port = 8000)
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)

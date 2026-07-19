@@ -33,20 +33,60 @@
 </head>
 <body>
     <h2>SSE 流式测试</h2>
-    <input id="msg" value="你好" placeholder="输入信息"/>
-    <button id="btn">发送请求</button>
+    <div style="margin-bottom:12px;">
+        <input id="msg" value="你好" placeholder="输入信息"/>
+        <button id="btn">发送请求</button>
+    </div>
+    <div id="key-status" style="font-size:12px; color:#888; margin-bottom:8px;"></div>
     <div id="output"></div>
 
     <script>
-        document.getElementById('btn').onclick = async () =>{
+        const STORAGE_KEY = 'sse_test_api_key';
+
+        // 获取已保存的 key，没有就弹窗让用户输入一次
+        function getApiKey() {
+            let key = localStorage.getItem(STORAGE_KEY);
+            if (key) return key;
+
+            key = (prompt('首次使用，请输入 API Key（仅存本地浏览器）：') || '').trim();
+            if (key) {
+                localStorage.setItem(STORAGE_KEY, key);
+            }
+            return key;
+        }
+
+        // 更新顶部状态提示
+        function updateStatus() {
+            const el = document.getElementById('key-status');
+            const key = localStorage.getItem(STORAGE_KEY);
+            if (key) {
+                el.innerHTML = 'API Key 已缓存（后4位：...'
+                    + key.slice(-4)
+                    + '）<a href="#" id="clear-key" style="margin-left:8px;">更换</a>';
+                document.getElementById('clear-key').onclick = function(e) {
+                    e.preventDefault();
+                    localStorage.removeItem(STORAGE_KEY);
+                    updateStatus();
+                };
+            } else {
+                el.innerHTML = '<span style="color:#e74c3c;">未保存 API Key，发送时会弹窗提示输入</span>';
+            }
+        }
+        updateStatus();
+
+        document.getElementById('btn').onclick = async () => {
             const msg = document.getElementById('msg').value;
+            const apiKey = getApiKey();
+            if (!apiKey) { alert('需要 API Key 才能发送'); return; }
+
             const output = document.getElementById('output');
-            output.textContent = ''; //清空
+            output.textContent = '';
+
             const res = await fetch('http://127.0.0.1:8000/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-API-Key' : prompt('请输入 API Key') || ''
+                    'X-API-Key': apiKey
                 },
                 body: JSON.stringify({ user_id: '123', message: msg })
             });
@@ -60,7 +100,6 @@
                 const text = decoder.decode(value, { stream: true });
                 output.textContent += text;
             }
-
         }
     </script>
 </body>
