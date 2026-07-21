@@ -30,6 +30,8 @@ class ConfigManager:
         # 从环境变量中获取模型名称（若不存在则使用默认值）
         self.model_name = os.getenv("MODEL_NAME", "deepseek-v4-pro")
         logger.info(f"MODEL_NAME: {self.model_name}")
+        self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        logger.info(f"REDIS_URL: {self.redis_url}")
 
         # 获取日志级别，若未设置则使用默认值 "INFO"
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
@@ -45,11 +47,13 @@ class ConfigManager:
             "API_URL": str | None,
             "MODEL_NAME": str,
             "LOG_LEVEL": str
+            "REDIS_URL": str
         }
         """
         return {
             "API_KEY": self.api_key,
             "API_URL": self.api_url,
             "MODEL_NAME": self.model_name,
-            "LOG_LEVEL": self.log_level
+            "LOG_LEVEL": self.log_level,
+            "REDIS_URL":self.redis_url
         }
