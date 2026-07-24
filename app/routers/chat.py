@@ -7,13 +7,13 @@ from redis_client import save_message, get_recent_messages
 from fastapi import APIRouter, Depends,Request
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
-
+from src.vector_store import VectorStore
 from src.config import ConfigManager
 from src.llm_client import call_llm_stream
 from app.dependencies import get_db, verify_api_key
 from app.schemas.chat import ChatHistoryResponse, ChatRequest
 from model import ChatHistory
-
+from prompts import build_rag_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -24,19 +24,13 @@ router = APIRouter(prefix="", tags=["chat"])
 
 
 # ── 流式管道 ─────────────────────────────────────────────
-async def generate_stream(prompt: str, api_key: str, api_url: str, model_name: str, user_id: str, db: Session,redis_client):
+async def generate_stream(prompt: str, api_key: str, api_url: str, model_name: str, user_id: str, db: Session,redis_client,context_docs):
     """把 LLM 的原始 SSE 块过滤为纯文本 data: 行，推给前端，并保存聊天历史。"""
     full_ai_reply = ""
     history = await get_recent_messages(redis_client, user_id, count=20)
-    context_prompt = prompt
-    if history:
-        context_lines = ["以下是之前的对话："]
-        for msg in history:
-            role_label = "用户" if msg.get("role") == "user" else "助手"
-            context_lines.append(f"{role_label}: {msg.get('content', '')}")
-        context_lines.append("---")
-        context_lines.append(f"当前问题：{prompt}")
-        context_prompt = "\n".join(context_lines)
+    # 从检索结果中提取纯文本列表
+    doc_texts = [doc["text"] for doc in context_docs] if context_docs else []
+    context_prompt = build_rag_prompt(query=prompt, context_docs=doc_texts, history=history)
 
     try:
         async for chunk in call_llm_stream(context_prompt, api_key, api_url, model_name):
@@ -92,17 +86,21 @@ def get_chat_history(user_id: str, db: Session = Depends(get_db)):
     
     return db_records
 
-
+vector_db = VectorStore(collection_name="my_rag_collection")
 @router.post("/chat")
 async def chat(
+    
     data: ChatRequest,
     request: Request,
     db: Session = Depends(get_db),
     api_key: str = Depends(verify_api_key),
+
 ):
+    context_docs = vector_db.search_similar(data.message)
+    context_docs = [doc for doc in context_docs if doc["distance"] < 0.7]
     redis_client = request.app.state.redis
     return StreamingResponse(
-        generate_stream(data.message, config.api_key, config.api_url, config.model_name, data.user_id, db,redis_client),
+        generate_stream(data.message, config.api_key, config.api_url, config.model_name, data.user_id, db,redis_client,context_docs),
         media_type="text/event-stream",
     )
 
