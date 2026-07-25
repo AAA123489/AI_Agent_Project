@@ -1,39 +1,100 @@
-# AI Agent 项目 — FastAPI + SSE 流式对话服务
+# AI 智能知识库问答系统（RAG Chat）
 
-基于 FastAPI 的 SSE（Server-Sent Events）流式 LLM 对话服务，支持 API Key 鉴权、请求参数校验、结构化日志与客户端断连优雅处理。
+基于 FastAPI 的 RAG（检索增强生成）智能问答后端，支持文档入库、向量语义检索、多轮对话记忆、SSE 流式响应，端到端闭环。
 
-当前适配的 API：**DeepSeek（Anthropic 兼容接口）**，模型为 `deepseek-v4-pro`。
+## 核心能力
 
-## 项目简介
+| 能力 | 说明 |
+|------|------|
+| 📄 文档解析 | 支持 TXT / Markdown / PDF，自动解析并提取文本 |
+| ✂️ 智能分块 | 自研递归文本切分器，按段落→句子→空格优先级切分，带重叠窗口 |
+| 🔢 向量检索 | Chroma 向量数据库，余弦相似度检索，distance 阈值兜底 |
+| 💬 流式对话 | SSE（Server-Sent Events）流式推送，逐字返回 LLM 生成内容 |
+| 🧠 多轮记忆 | Redis 短期记忆管道，LPUSH + EXPIRE 30 分钟自动过期 |
+| 🔐 API 鉴权 | 自定义 X-API-Key 认证，FastAPI 依赖注入实现 |
+| 📊 对话持久化 | SQLAlchemy 异步 ORM，对话历史自动入库、支持查询 |
 
-本项目是一个学习型 AI Agent 后端服务，核心能力包括：
+## 技术栈
 
-- **SSE 流式响应** — 通过 `aiohttp` 逐块读取 LLM 原始流 → buffer 拼行 → JSON 过滤提取纯文本 → `StreamingResponse` 推送给前端
-- **API Key 鉴权** — 基于 FastAPI `Depends` 依赖注入的自定义 Header 认证，区分"未传 Key"与"Key 不匹配"两种失败场景
-- **配置管理** — 通过 `.env` 文件管理 API 密钥、接口地址、日志级别等敏感配置
-- **结构化日志** — 统一的日志模块，同时输出到控制台和滚动文件（`app.log`），覆盖鉴权、LLM 调用、流式连接所有关键节点
-- **断连优雅处理** — 双层 `finally` + `CancelledError` 捕获，客户端断开时正确关闭上游 LLM 连接
+- **Web 框架**：FastAPI + Uvicorn（ASGI）
+- **数据库**：SQLite + SQLAlchemy 2.0 ORM
+- **缓存 / 记忆**：Redis（异步客户端 redis-py）
+- **向量库**：Chroma（本地持久化 + HNSW 余弦索引）
+- **Embedding 模型**：paraphrase-multilingual-MiniLM-L12-v2（中英多语言支持）
+- **LLM 调用**：aiohttp 异步流式请求 → DeepSeek API
+- **流式协议**：SSE（Server-Sent Events）
+- **数据校验**：Pydantic V2
+- **日志系统**：RotatingFileHandler，500KB 自动滚动
+
+## 系统架构
+
+```
+用户浏览器（chat.html）
+        │
+        ▼
+   POST /chat ──────────────────────────────┐
+        │                                    │
+        ▼                                    │
+   X-API-Key 鉴权（依赖注入）                 │
+        │                                    │
+        ▼                                    │
+   ┌─ 向量检索 ─┐   ┌─ Redis ─┐             │
+   │ Chroma     │   │ 查询历史 │             │
+   │ 语义匹配   │   │ 多轮对话 │             │
+   └─────┬──────┘   └───┬─────┘             │
+         │               │                   │
+         ▼               ▼                   │
+   ┌──────────────────────────┐              │
+   │  拼装 RAG Prompt         │              │
+   │  历史 + 上下文 + 问题     │              │
+   └──────────┬───────────────┘              │
+              │                              │
+              ▼                              │
+   ┌──────────────────────────┐              │
+   │  DeepSeek API 流式调用    │              │
+   │  aiohttp 异步逐块读取     │              │
+   └──────────┬───────────────┘              │
+              │                              │
+              ▼                              │
+   ┌──────────────────────────┐              │
+   │  SSE StreamingResponse   │──────────────┘
+   │  逐字推送给前端           │
+   └──────────┬───────────────┘
+              │
+              ▼
+   ┌──────────────────────────┐
+   │  Redis 写入最新对话        │
+   │  SQLite 持久化历史记录     │
+   └──────────────────────────┘
+```
 
 ## 目录结构
 
 ```
 AI_Agent_Project/
-├── main.py                  # FastAPI 入口：SSE 流式 /chat 端点 + /health 健康检查
-├── dependencies.py          # FastAPI 依赖注入：X-API-Key 鉴权
-├── requirements.txt         # 项目依赖清单（pip freeze 锁定版本）
-├── .env                     # 环境变量（API_KEY、API_URL 等，已加入 .gitignore）
-├── .gitignore               # Git 忽略规则
-├── app.log                  # 运行时日志文件（500KB 滚动，保留 3 份）
-├── test_sse.html            # 浏览器端 SSE 流式测试页面
+├── main.py                  # FastAPI 应用入口（生命周期、CORS、路由）
+├── database.py              # SQLAlchemy 引擎 & 会话工厂
+├── model.py                 # ChatHistory ORM 数据模型
+├── redis_client.py          # Redis 短期记忆管道
+├── prompts.py               # RAG Prompt 模板（历史+上下文+问题）
+├── rag_pipeline.py          # RAG 文档入库流水线（解析→切分→Hash→入库）
+├── text_splitter.py         # 自研递归文本切分器
+├── document_parser.py       # PDF 解析器（pypdf）
+├── requirements.txt         # 项目依赖
+├── .env.example             # 环境变量模板
+├── test_sse.html            # 浏览器 SSE 流式测试页面（调试用）
+├── static/
+│   └── chat.html            # 聊天前端页面（演示用）
 ├── app/
-│   ├── __init__.py          # 包标记文件
-│   └── schemas.py           # Pydantic 请求模型（ChatRequest）
+│   ├── dependencies/__init__.py   # API Key 鉴权 + 数据库会话注入
+│   ├── routers/chat.py            # /chat（SSE流式+向量检索）
+│   │                              # /history/{user_id}（对话历史）
+│   └── schemas/chat.py            # Pydantic 请求/响应模型
 └── src/
-    ├── __init__.py          # 包标记文件
-    ├── config.py            # ConfigManager：读取和管理配置参数
-    ├── logger.py            # 统一日志实例（RotatingFileHandler + stderr）
-    ├── llm_client.py        # call_llm_stream：异步流式 LLM API 客户端
-    └── file_handler.py      # 文件读取工具
+    ├── config.py             # .env 配置管理
+    ├── llm_client.py         # LLM 异步流式调用客户端
+    ├── logger.py             # 日志配置
+    └── vector_store.py       # Chroma 向量库封装
 ```
 
 ## 环境要求
@@ -72,13 +133,20 @@ pip install -r requirements.txt
 
 ### 4. 配置环境变量
 
-在项目根目录创建 `.env` 文件，填入以下内容：
+复制 `.env.example` 为 `.env`，填入你的 DeepSeek API Key：
+
+```bash
+cp .env.example .env
+# 然后编辑 .env，把 your_api_key_here 替换成真实的 Key
+```
+
+`.env` 文件内容：
 
 ```ini
 API_KEY=你的DeepSeek_API密钥
 API_URL=https://api.deepseek.com/anthropic/v1/messages
 MODEL_NAME=deepseek-v4-pro
-LOG_LEVEL=INFO
+REDIS_URL=redis://localhost:6379
 ```
 
 > ⚠️ `.env` 已在 `.gitignore` 中排除，不会被提交到 Git。
@@ -90,6 +158,7 @@ python main.py
 ```
 
 服务启动后访问：
+- 聊天前端：http://127.0.0.1:8000/static/chat.html
 - API 文档（Swagger UI）：http://127.0.0.1:8000/docs
 - 健康检查：http://127.0.0.1:8000/health
 
@@ -132,12 +201,37 @@ SSE 流式对话接口，需 API Key 鉴权。
 
 **响应：** `text/event-stream`（SSE 格式），逐块返回 LLM 生成的文本。
 
+### `GET /history/{user_id}`
+
+查询指定用户的对话历史。
+
+**响应示例：**
+
+```json
+[
+  {
+    "id": 1,
+    "user_id": "zhangsan",
+    "role": "user",
+    "content": "你好",
+    "created_at": "2026-07-25T10:30:00"
+  },
+  {
+    "id": 2,
+    "user_id": "zhangsan",
+    "role": "assistant",
+    "content": "你好！有什么可以帮助你的吗？",
+    "created_at": "2026-07-25T10:30:05"
+  }
+]
+```
+
 ## 鉴权方式
 
 本项目使用自定义 Header `X-API-Key` 进行 API Key 认证。
 
 - `.env` 中的 `API_KEY` 同时作为**服务端调用 LLM 的凭证**和**客户端访问服务端的凭证**
-- 鉴权逻辑在 `dependencies.py` 中通过 FastAPI `Depends` 实现
+- 鉴权逻辑在 `app/dependencies/__init__.py` 中通过 FastAPI `Depends` 实现
 - `/health` 端点无需鉴权
 
 **鉴权失败场景：**
@@ -146,6 +240,36 @@ SSE 流式对话接口，需 API Key 鉴权。
 |------|-----------|----------|
 | 未传 `X-API-Key` Header | 401 | `未提供 API Key，客户端 IP: ...` |
 | 传了但 Key 不匹配 | 401 | `API Key 匹配失败，客户端 IP: ...` |
+
+## 环境变量参考
+
+| 变量名 | 必填 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `API_KEY` | ✅ | — | DeepSeek API 密钥，同时用作服务端鉴权凭证 |
+| `API_URL` | ✅ | — | DeepSeek Anthropic 兼容接口地址 |
+| `MODEL_NAME` | ❌ | `deepseek-v4-pro` | 对话模型名称 |
+| `REDIS_URL` | ❌ | `redis://localhost:6379` | Redis 服务连接地址 |
+| `LOG_LEVEL` | ❌ | `INFO` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR` |
+
+## 模块说明
+
+| 模块 | 功能 |
+|------|------|
+| `main.py` | FastAPI 应用入口：SSE 流式 `/chat` 端点、`/health` 健康检查、CORS 中间件、lifespan 生命周期 |
+| `app/dependencies/__init__.py` | `verify_api_key` 依赖注入：从 `X-API-Key` Header 读取并校验 API Key；`get_db` 数据库会话 |
+| `app/routers/chat.py` | `/chat` SSE 流式对话（向量检索+RAG）、`/health` 健康检查、`/history/{user_id}` 历史查询 |
+| `app/schemas/chat.py` | `ChatRequest` / `ChatHistoryResponse` Pydantic 模型 |
+| `src/config.py` | `ConfigManager` 类：从 `.env` 读取配置 |
+| `src/logger.py` | 统一日志实例：同时输出到 stderr 和 `app.log`（500KB 滚动，保留 3 份） |
+| `src/llm_client.py` | `call_llm_stream()`：异步生成器，通过 aiohttp 流式读取 LLM API 响应 |
+| `src/vector_store.py` | Chroma 向量数据库封装：文档增删查、相似度检索 |
+| `database.py` | SQLAlchemy 数据库引擎与会话工厂 |
+| `model.py` | `ChatHistory` ORM 模型 |
+| `redis_client.py` | Redis 异步客户端：LPUSH + EXPIRE 存消息，LRANGE 取历史 |
+| `rag_pipeline.py` | 文档入库流水线：读取 → 切分 → SHA-256 生成 ID → 批量存入 Chroma |
+| `text_splitter.py` | 递归文本切分器（支持多级分隔符） |
+| `document_parser.py` | PDF 文件解析器（pypdf） |
+| `prompts.py` | RAG Prompt 模板拼装（历史对话 + 检索上下文 + 当前问题） |
 
 ## Postman 测试指南
 
@@ -238,39 +362,6 @@ LLM 流式连接关闭
 - `流结束了` → `main.py` 中 `generate_stream` 的 `finally` 块触发
 
 这证明了双层 finally 兜底机制正常工作：客户端断开 → `CancelledError` → 上游 aiohttp 连接关闭 → 资源清理。
-
-## 环境变量参考
-
-| 变量名 | 必填 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `API_KEY` | ✅ | — | DeepSeek API 密钥，同时用作服务端鉴权凭证 |
-| `API_URL` | ✅ | — | DeepSeek Anthropic 兼容接口地址 |
-| `MODEL_NAME` | ❌ | `deepseek-v4-pro` | 对话模型名称 |
-| `LOG_LEVEL` | ❌ | `INFO` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR` |
-
-## 模块说明
-
-| 模块 | 功能 |
-|------|------|
-| `main.py` | FastAPI 应用入口：SSE 流式 `/chat` 端点、`/health` 健康检查、CORS 中间件 |
-| `dependencies.py` | `verify_api_key` 依赖注入：从 `X-API-Key` Header 读取并校验 API Key |
-| `app/schemas.py` | `ChatRequest` Pydantic 模型：校验 `user_id` 和 `message` 字段 |
-| `src/config.py` | `ConfigManager` 类：从 `.env` 读取配置，动态设置日志级别 |
-| `src/logger.py` | 项目级 `logger` 实例：同时输出到 stderr 和 `app.log`（500KB 滚动，保留 3 份） |
-| `src/llm_client.py` | `call_llm_stream()`：异步生成器，通过 aiohttp 流式读取 LLM API 响应 |
-| `src/file_handler.py` | `read_text_file()`：以 UTF-8 安全读取文本文件 |
-
-## 核心依赖
-
-| 包名 | 作用 |
-|------|------|
-| `fastapi` | Web 框架，路由与中间件 |
-| `uvicorn` | ASGI 服务器 |
-| `pydantic` | 请求数据校验 |
-| `starlette` | `StreamingResponse` SSE 流式响应 |
-| `aiohttp` | 异步 HTTP 客户端（向 LLM 发流式请求） |
-| `python-dotenv` | 加载 `.env` 环境变量 |
-| `fastapi-cdn-host` | 国内 CDN 加速 Swagger UI |
 
 ## 许可证
 

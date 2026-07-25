@@ -1,8 +1,8 @@
 """Pydantic 请求/响应模型。"""
-from pydantic import BaseModel, Field
-from pydantic import BaseModel, ConfigDict
-from typing import List
 from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class ChatRequest(BaseModel):
     message: str = Field(

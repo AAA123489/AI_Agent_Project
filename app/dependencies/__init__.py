@@ -1,8 +1,8 @@
 """FastAPI 可复用依赖。"""
 import logging
-from typing import Generator
+from collections.abc import Generator
 
-from fastapi import Request, Header, HTTPException
+from fastapi import Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
@@ -14,12 +14,13 @@ logger = logging.getLogger(__name__)
 _config = ConfigManager()
 
 
-def verify_api_key(x_api_key: str = Header(None), request: Request = None):
+def verify_api_key(request: Request, x_api_key: str | None = Header(None)):
+    client_ip = request.client.host if request.client else "unknown"
     if not x_api_key:
-        logger.warning("未提供 API Key，客户端 IP: %s", request.client.host)
+        logger.warning("未提供 API Key，客户端 IP: %s", client_ip)
         raise HTTPException(status_code=401, detail="Unauthorized")
     elif x_api_key != _config.api_key:
-        logger.warning("API Key 匹配失败，客户端 IP: %s", request.client.host)
+        logger.warning("API Key 匹配失败，客户端 IP: %s", client_ip)
         raise HTTPException(status_code=401, detail="Unauthorized")
     else:
         logger.info("apikey验证成功")

@@ -34,6 +34,7 @@
 <body>
     <h2>SSE 流式测试</h2>
     <div style="margin-bottom:12px;">
+        <input id="user-id" value="zhangsan" placeholder="用户ID" style="width:120px;"/>
         <input id="msg" value="你好" placeholder="输入信息"/>
         <button id="btn">发送请求</button>
     </div>
@@ -42,6 +43,8 @@
 
     <script>
         const STORAGE_KEY = 'sse_test_api_key';
+
+        const API_BASE = 'http://127.0.0.1:8000';
 
         // 获取已保存的 key，没有就弹窗让用户输入一次
         function getApiKey() {
@@ -76,19 +79,20 @@
 
         document.getElementById('btn').onclick = async () => {
             const msg = document.getElementById('msg').value;
+            const userId = document.getElementById('user-id').value || 'anonymous';
             const apiKey = getApiKey();
             if (!apiKey) { alert('需要 API Key 才能发送'); return; }
 
             const output = document.getElementById('output');
             output.textContent = '';
 
-            const res = await fetch('http://127.0.0.1:8000/chat', {
+            const res = await fetch(`${API_BASE}/chat`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-API-Key': apiKey
                 },
-                body: JSON.stringify({ user_id: '123', message: msg })
+                body: JSON.stringify({ user_id: userId, message: msg })
             });
 
             const reader = res.body.getReader();

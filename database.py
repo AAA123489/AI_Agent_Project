@@ -1,6 +1,6 @@
 # 导入 SQLAlchemy 的核心组件，用于创建数据库引擎和会话
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker,declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 # 数据库连接地址，使用本地 SQLite 文件保存数据
 SQLALCHEMY_DATABASE_URL = "sqlite:///./chat_app.db"

@@ -11,3 +11,9 @@ app.log
 # Python缓存垃圾文件
 __pycache__/
 *.pyc
+
+# Chroma 向量数据库
+chroma_db/
+
+# SQLite 数据库文件
+*.db

@@ -1,7 +1,9 @@
-import asyncio  # 引入 asyncio 库，用于编写异步协程
-import aiohttp  # 引入 aiohttp 库，用于异步 HTTP 请求
+import asyncio
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+
+import aiohttp
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,7 +19,7 @@ async def call_llm_stream(prompt: str, api_key: str, api_url: str, model_name: s
         "messages": [{"role": "user", "content": prompt}],
         "stream": True
     }
-    logger.info(f"发送流式申请：{prompt}")
+    logger.info("发送流式请求：%s", prompt)
     async with aiohttp.ClientSession() as session:  # 创建一个异步 HTTP 会话
         try:
             async with session.post(api_url, headers=headers, json=payload) as response:
@@ -38,6 +40,6 @@ async def call_llm_stream(prompt: str, api_key: str, api_url: str, model_name: s
                     error_text = await response.text()
                     yield f'data: {{"error": true, "status": {response.status}, "message": "{error_text}"}}\n\n'
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            yield f'data: {{"error": true, "message": "{str(e)}"}}\n\n'
-        finally :
+            yield f'data: {{"error": true, "message": "{e!s}"}}\n\n'
+        finally:
             logger.info("LLM 流式连接关闭")

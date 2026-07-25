@@ -1,9 +1,7 @@
-
 import logging  # 标准库日志模块
+import os  # 用于构建日志文件的绝对路径
 import sys  # 用于获取标准错误输出流
 from logging.handlers import RotatingFileHandler  # 支持按大小轮转的文件处理器
-import os # 用于构建日志文件的绝对路径
-
 
 # 直接拿到根 logger，往它身上挂 handler
 root_logger = logging.getLogger()

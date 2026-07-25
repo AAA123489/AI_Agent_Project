@@ -1,6 +1,7 @@
-from dotenv import load_dotenv  # 用于从 .env 文件加载环境变量
-import os  # 访问操作系统环境变量与路径
 import logging
+import os  # 访问操作系统环境变量与路径
+
+from dotenv import load_dotenv  # 用于从 .env 文件加载环境变量
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,6 @@ class ConfigManager:
 
         # 获取日志级别，若未设置则使用默认值 "INFO"
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
-        logging.getLogger().setLevel(self.log_level.upper())
 
     def get_config(self) -> dict[str, str | None]:
         """
