@@ -16,6 +16,8 @@ class RecursiveTextSplitter:
 
 
     def split_text(self,text: str) -> list[str]:
+        if not text.strip():
+            return []
         final_chunks = self._recursive_split(text, separator_index=0)
 
         return self._apply_overlap(final_chunks)
