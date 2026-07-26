@@ -17,3 +17,7 @@ chroma_db/
 
 # SQLite 数据库文件
 *.db
+
+# 工具缓存
+.ruff_cache/
+.pytest_cache/
