@@ -1,4 +1,5 @@
 import pypdf
+from docx import Document
 from pypdf import PasswordType
 
 
@@ -13,7 +14,7 @@ def parse_pdf(file_path: str) -> tuple[str, dict]:
         text = page.extract_text()
         if text is None:
             text = ""
-        full_text += text 
+        full_text += text
     if reader.metadata is not None:
         author = reader.metadata.get("/Author", "unknown")
         creation_date_str = reader.metadata.get("/CreationDate", "")
@@ -21,5 +22,20 @@ def parse_pdf(file_path: str) -> tuple[str, dict]:
     else:
         author = "unknown"
         year = ""
+    return (full_text, {"author": author, "year": year})
+
+
+def parse_docx(file_path: str) -> tuple[str, dict]:
+    """解析 .docx 文件，返回 (文本, 元数据)。"""
+    doc = Document(file_path)
+    full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+    author = "unknown"
+    year = ""
+    if doc.core_properties:
+        author = doc.core_properties.author or "unknown"
+        if doc.core_properties.created:
+            year = str(doc.core_properties.created.year)
+
     return (full_text, {"author": author, "year": year})
 

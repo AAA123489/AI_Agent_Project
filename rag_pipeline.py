@@ -18,7 +18,12 @@ def ingest_document(file_path: str, author: str = "unknown", year: str = "", vec
     logger.info("正在读取文件: %s", file_path)
     if file_path.lower().endswith(".pdf"):
         from document_parser import parse_pdf
-        text, meta = parse_pdf(file_path)  # parse_pdf 返回 (文本, 元数据)，解包取文本
+        text, meta = parse_pdf(file_path)
+        author = meta.get("author", author)
+        year = meta.get("year", year)
+    elif file_path.lower().endswith(".docx"):
+        from document_parser import parse_docx
+        text, meta = parse_docx(file_path)
         author = meta.get("author", author)
         year = meta.get("year", year)
     else:

@@ -1,9 +1,11 @@
-"""聊天相关路由 —— SSE 流式对话 & 健康检查。"""
+"""聊天相关路由 —— SSE 流式对话、文档上传 & 健康检查。"""
 import asyncio
 import json
 import logging
+import tempfile
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
@@ -12,6 +14,7 @@ from app.dependencies import get_db, verify_api_key
 from app.schemas.chat import ChatHistoryResponse, ChatRequest
 from model import ChatHistory
 from prompts import build_rag_prompt
+from rag_pipeline import ingest_document
 from redis_client import get_recent_messages, save_message
 from src.llm_client import call_llm_stream
 from src.vector_store import VectorStore
@@ -126,6 +129,78 @@ def get_chat_history(
     except Exception:
         logger.exception("查询聊天历史失败 | user_id=%s", user_id)
         raise HTTPException(status_code=500, detail="查询历史记录失败")
+
+
+# ── 文档上传 ──────────────────────────────────────────────
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
+
+
+@router.post("/upload")
+async def upload_document(
+    file: UploadFile = File(...),  # noqa: B008
+    api_key: str = Depends(verify_api_key),
+):
+    """上传文档到知识库（TXT / Markdown / PDF）。
+
+    文件保存到临时目录后调用 ingest_document 入库，支持幂等覆盖。
+    """
+    # 1. 校验文件类型
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {suffix}。支持: {', '.join(ALLOWED_EXTENSIONS)}",
+        )
+
+    # 2. 保存上传文件到临时目录（保留原始文件名以避免覆盖冲突）
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="文件内容为空")
+
+        tmp_dir = Path(tempfile.gettempdir()) / "rag_uploads"
+        tmp_dir.mkdir(exist_ok=True)
+        tmp_path = tmp_dir / file.filename
+
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+
+        logger.info("文件已保存至临时路径: %s (%d bytes)", tmp_path, len(content))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("保存上传文件失败")
+        raise HTTPException(status_code=500, detail="文件保存失败")
+
+    # 3. 调用入库管道
+    try:
+        vector_db = await get_vector_db()
+
+        # 幂等：删除同文件旧数据
+        file_path_str = str(tmp_path)
+        existing = await asyncio.to_thread(vector_db.count_by_source, file_path_str)
+        if existing > 0:
+            await asyncio.to_thread(vector_db.delete_by_source, file_path_str)
+            logger.info("覆盖模式：已删除旧数据 %d 条", existing)
+
+        total_before = await asyncio.to_thread(vector_db.count)
+        await asyncio.to_thread(ingest_document, file_path_str, vector_store=vector_db)
+        total_after = await asyncio.to_thread(vector_db.count)
+        new_chunks = total_after - total_before
+
+        return {
+            "status": "ok",
+            "filename": file.filename,
+            "chunks": new_chunks,
+            "total_chunks": total_after,
+            "replaced": existing > 0,
+            "replaced_count": existing,
+        }
+    except Exception:
+        logger.exception("文档入库失败 | file=%s", file.filename)
+        raise HTTPException(status_code=500, detail="文档入库失败，请检查文件格式和内容")
 
 
 _vector_db: VectorStore | None = None
