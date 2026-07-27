@@ -1,5 +1,12 @@
 # AI 智能知识库问答系统（RAG Chat）
 
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Chroma](https://img.shields.io/badge/Chroma-vector--db-FF6B6B?style=flat&logo=chromadb&logoColor=white)](https://www.trychroma.com/)
+[![Redis](https://img.shields.io/badge/Redis-cache-DC382D?style=flat&logo=redis&logoColor=white)](https://redis.io/)
+[![MCP](https://img.shields.io/badge/MCP-protocol-6E3FF3?style=flat&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io/)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
+
 基于 FastAPI 的 RAG（检索增强生成）智能问答后端，支持文档入库、向量语义检索、多轮对话记忆、SSE 流式响应，端到端闭环。
 
 ## 核心能力
@@ -108,7 +115,7 @@ AI_Agent_Project/
 ### 1. 克隆项目
 
 ```bash
-git clone <你的仓库地址>
+git clone https://github.com/AAA123489/AI_Agent_Project.git
 cd AI_Agent_Project
 ```
 
