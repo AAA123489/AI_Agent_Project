@@ -3,7 +3,7 @@
     "rag-knowledge-base": {
       "command": "python",
       "args": ["-m", "mcp_server.server"],
-      "cwd": "e:/vscode-program/AI_Agent_Project"
+      "cwd": "e:/vscode-program/AI_Agent_Project/rag_chat"
     }
   }
 }
