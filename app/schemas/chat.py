@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 class ChatRequest(BaseModel):
     message: str = Field(
         min_length=2,
-        max_length=1000,
-        description="用户消息，2-1000 字符",
+        max_length=10000,
+        description="用户消息，2-10000 字符",
     )
     user_id: str = Field(
         min_length=2,
