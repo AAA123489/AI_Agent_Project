@@ -20,7 +20,7 @@ _rag_chat_path = Path(__file__).resolve().parent.parent / "rag_chat"
 if str(_rag_chat_path) not in sys.path:
     sys.path.insert(0, str(_rag_chat_path))
 
-from src.vector_store import VectorStore  # noqa: E402
+from src.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 

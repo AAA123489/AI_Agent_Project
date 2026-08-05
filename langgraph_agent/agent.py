@@ -30,11 +30,6 @@ tools 节点：执行工具（search_knowledge_base / list_sources / calculate�
     cd langgraph_agent
     python agent.py
 
-面试要点（看完代码后，你应该能回答）：
-    1. ReAct 循环的四个阶段：Thought → Action → Observation → Thought...
-    2. LangGraph 节点和条件边的设计理由
-    3. 为什么手搓 agent 循环 vs 用 LangGraph 预置的 create_react_agent
-    4. Anthropic Tool Use 协议 vs OpenAI Function Calling 的区别
 """
 
 import asyncio
@@ -103,7 +98,6 @@ SYSTEM_PROMPT = (
     "- 用中文回复用户"
 )
 
-
 # ═══════════════════════════════════════════════════════════════
 # Agent 状态定义
 # ═══════════════════════════════════════════════════════════════
@@ -118,7 +112,6 @@ class AgentState(TypedDict):
     """
     messages: Annotated[list[dict], operator.add]
     round_count: int
-
 
 # ═══════════════════════════════════════════════════════════════
 # LLM 调用（Anthropic-Compatible API，支持 Tool Use）
@@ -136,7 +129,8 @@ async def call_llm(
         {model, max_tokens, system, messages, tools}
 
     响应格式：
-        {content: [{type: "text", text: "..."} / {type: "tool_use", ...}],
+        {content: [{type: "te
+        xt", text: "..."} / {type: "tool_use", ...}],
          stop_reason: "end_turn" / "tool_use"}
     """
     headers = {
@@ -195,7 +189,6 @@ async def call_llm(
         "stop_reason": stop_reason,
     }
 
-
 # ═══════════════════════════════════════════════════════════════
 # LangGraph 节点
 # ═══════════════════════════════════════════════════════════════
@@ -220,7 +213,6 @@ async def agent_node(state: AgentState) -> dict:
         "messages": [assistant_msg],
         "round_count": state.get("round_count", 0) + 1,
     }
-
 
 async def tool_node(state: AgentState) -> dict:
     """tools 节点：执行 LLM 请求的工具调用。
@@ -278,7 +270,6 @@ async def tool_node(state: AgentState) -> dict:
         "round_count": state["round_count"],
     }
 
-
 # ═══════════════════════════════════════════════════════════════
 # 条件路由
 # ═══════════════════════════════════════════════════════════════
@@ -308,7 +299,6 @@ def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
 
     # 没有 assistant 消息（首次进入）→ 不应该出现，结束
     return END
-
 
 # ═══════════════════════════════════════════════════════════════
 # 构建 LangGraph 状态图
@@ -348,7 +338,6 @@ def build_agent() -> StateGraph:
     logger.info("Agent 状态图构建完成")
     return compiled
 
-
 # ═══════════════════════════════════════════════════════════════
 # 工具函数：从 Agent 状态中提取最终答案
 # ═══════════════════════════════════════════════════════════════
@@ -358,7 +347,7 @@ def extract_final_answer(state: AgentState) -> str:
 
     遍历所有 assistant 消息中 type=text 的内容块，拼接输出。
     """
-    answers = []
+    answers = []   
     for msg in state.get("messages", []):
         if msg.get("role") != "assistant":
             continue
@@ -366,7 +355,6 @@ def extract_final_answer(state: AgentState) -> str:
             if isinstance(block, dict) and block.get("type") == "text":
                 answers.append(block.get("text", ""))
     return "\n".join(answers) if answers else "（Agent 未生成回复）"
-
 
 # ═══════════════════════════════════════════════════════════════
 # 交互式 CLI
@@ -446,7 +434,6 @@ async def main():
             if msg.get("role") == "assistant":
                 conversation_messages.append(msg)
                 break
-
 
 if __name__ == "__main__":
     asyncio.run(main())
