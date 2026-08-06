@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RAG Chat - AI 智能知识库问答</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root {
     --bg: #1a1a2e; --sidebar-bg: #0d1117; --card: #161b22;
@@ -14,10 +15,12 @@
     --hover: #1c2128;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
+  html { height: 100%; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: var(--bg); color: var(--text);
-    height: 100vh; display: flex; overflow: hidden;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; overflow: hidden;
   }
 
   /* ════ 侧边栏 ════ */
@@ -131,10 +134,18 @@
     margin-top:6px; padding:6px 10px; background:var(--sidebar-bg);
     border-radius:6px; font-size:11px; color:var(--text-dim);
   }
-  .sources .src-title { color:var(--accent); font-weight:600; margin-bottom:2px; font-size:11px; }
-  .sources .src-item { padding:3px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-bottom:1px solid var(--border); }
+  .sources .src-title {
+    color:var(--accent); font-weight:600; margin-bottom:2px; font-size:11px;
+    cursor:pointer; user-select:none; display:inline-block;
+  }
+  .sources .src-title:hover { opacity:.8; }
+  .sources .src-list { display:none; margin-top:4px; }
+  .sources .src-list.open { display:block; }
+  .sources .src-item { padding:6px 0; border-bottom:1px solid var(--border); }
   .sources .src-item:last-child { border-bottom:none; }
-  .sources .src-dist { font-size:10px; color:var(--warn); margin-left:4px; }
+  .sources .src-meta { font-size:10px; color:var(--warn); margin-bottom:2px; }
+  .sources .src-meta .sim { color:var(--success); font-weight:600; }
+  .sources .src-text { font-size:11px; color:var(--text-dim); white-space:pre-wrap; word-break:break-all; }
 
   /* 输入区 */
   .input-area {
@@ -187,7 +198,109 @@
   @media (max-width: 700px) {
     .sidebar { display:none; }
     .msg { max-width:95%; }
+    .mobile-api-hint {
+      display: flex;
+    }
   }
+
+  /* ════ 移动端 API Key 提示条 ════ */
+  .mobile-api-hint {
+    display: none;
+    align-items: center; gap: 8px;
+    padding: 8px 14px; margin: 0 20px;
+    background: rgba(233,69,96,.12);
+    border: 1px solid rgba(233,69,96,.3);
+    border-radius: 8px; font-size: 12px; color: var(--accent);
+  }
+  .mobile-api-hint button {
+    padding: 4px 12px; border-radius: 6px; border: 1px solid var(--accent);
+    background: transparent; color: var(--accent);
+    font-size: 11px; cursor: pointer; white-space: nowrap;
+    font-family: inherit;
+  }
+  .mobile-api-hint button:hover { background: var(--accent); color: #fff; }
+
+  /* ════ API Key 弹窗 ════ */
+  .api-modal-input {
+    width: 100%; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--text); font-size: 14px; outline: none;
+    margin: 12px 0 8px; font-family: inherit;
+    transition: border .2s;
+  }
+  .api-modal-input:focus { border-color: var(--accent); }
+  .api-modal-hint {
+    font-size: 11px; color: var(--text-dim); margin-bottom: 16px;
+    line-height: 1.6;
+  }
+  .api-modal-remember {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-dim); margin-bottom: 16px;
+  }
+
+  /* ════ 确认弹窗 ════ */
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.65); z-index: 1000;
+    justify-content: center; align-items: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal-box {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; max-width: 420px; width: 90%;
+    animation: fadeIn .2s ease;
+  }
+  .modal-box h3 { color: var(--accent); margin-bottom: 12px; font-size: 16px; }
+  .modal-box p { font-size: 13px; color: var(--text-dim); line-height: 1.7; margin-bottom: 20px; }
+  .modal-box .scrape-summary {
+    font-size: 11px; color: var(--warn); margin-top: 8px;
+    padding: 8px 12px; background: rgba(210,153,29,.1);
+    border-radius: 6px; border-left: 3px solid var(--warn);
+  }
+  .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; }
+  .modal-buttons button {
+    padding: 8px 18px; border-radius: 8px; border: none;
+    font-size: 13px; cursor: pointer; transition: opacity .2s;
+  }
+  .modal-buttons button:hover { opacity: .85; }
+  .modal-btn-cancel { background: var(--border); color: var(--text); }
+  .modal-btn-confirm { background: var(--accent); color: #fff; }
+
+  /* ════ 思考过程折叠 ════ */
+  .thinking-wrap { margin-top: 4px; }
+  .thinking-toggle {
+    font-size: 11px; color: var(--text-dim); cursor: pointer;
+    user-select: none; display: inline-block; padding: 2px 4px;
+  }
+  .thinking-toggle:hover { color: var(--accent); }
+  .thinking-steps {
+    display: none; margin-top: 6px; padding: 8px 12px;
+    background: var(--sidebar-bg); border-radius: 6px;
+    border: 1px solid var(--border); font-size: 11px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    color: var(--text-dim); max-height: 200px; overflow-y: auto;
+    line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+  }
+  .thinking-steps.open { display: block; }
+
+  /* ════ 爬虫按钮 ════ */
+  .scrape-btn {
+    margin: 8px 16px; padding: 10px;
+    border-radius: 8px; border: 1px dashed var(--border);
+    background: transparent; color: var(--text-dim);
+    font-size: 13px; cursor: pointer; transition: all .2s;
+    text-align: center; width: calc(100% - 32px);
+    font-family: inherit;
+  }
+  .scrape-btn:hover { border-color: var(--warn); color: var(--warn); }
+  .scrape-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .scrape-status {
+    font-size: 10px; margin: 4px 16px 0; padding: 4px 8px; border-radius: 4px;
+    display: none; text-align: center;
+  }
+  .scrape-status.success { display:block; background: #003d1a; color: var(--success); }
+  .scrape-status.error { display:block; background: #3d0000; color: var(--accent); }
+  .scrape-status.loading { display:block; background: #1a1a00; color: var(--warn); }
 </style>
 </head>
 <body>
@@ -217,6 +330,11 @@
       <input type="file" id="fileInput" accept=".txt,.md,.pdf,.docx" onchange="onFileSelected(event)">
     </div>
     <div class="upload-status" id="uploadStatus"></div>
+
+    <button class="scrape-btn" id="scrapeBtn" onclick="confirmScrape()">
+      🕷️ 爬取官网更新
+    </button>
+    <div class="scrape-status" id="scrapeStatus"></div>
   </div>
 
   <button class="new-chat-btn" onclick="newChat()">＋ 新建对话</button>
@@ -236,6 +354,12 @@
   <div class="header">
     <h1 id="chatTitle">💬 新对话</h1>
     <span class="badge">RAG + SSE 流式</span>
+  </div>
+
+  <!-- 移动端 API Key 提示条 -->
+  <div class="mobile-api-hint" id="mobileApiHint">
+    ⚠️ 未配置 API Key
+    <button onclick="showApiKeyModal()">点击设置</button>
   </div>
 
   <div class="messages" id="messages">
@@ -259,6 +383,7 @@
 
 const API_BASE = window.location.protocol === 'file:' ? 'http://127.0.0.1:8000' : '';
 const STORAGE_KEY = 'rag_chat_api_key';
+const USER_KEY = 'rag_chat_user_id';
 const CHATS_KEY = 'rag_chat_conversations';
 
 // ── DOM 引用 ──
@@ -288,6 +413,7 @@ function loadSavedKey() {
     forgetEl.style.display = 'inline';
     keySavedHint.style.display = 'block';
   }
+  updateMobileApiHint();
 }
 rememberEl.addEventListener('change', () => {
   if (rememberEl.checked && apiKeyEl.value.trim()) {
@@ -298,16 +424,33 @@ rememberEl.addEventListener('change', () => {
     forgetEl.style.display = 'none';
     keySavedHint.style.display = 'none';
   }
+  updateMobileApiHint();
 });
 forgetEl.addEventListener('click', (e) => {
   e.preventDefault();
   localStorage.removeItem(STORAGE_KEY);
   apiKeyEl.value = ''; rememberEl.checked = false;
   forgetEl.style.display = 'none'; keySavedHint.style.display = 'none';
+  updateMobileApiHint();
 });
 apiKeyEl.addEventListener('input', () => {
   if (rememberEl.checked && apiKeyEl.value.trim()) {
     localStorage.setItem(STORAGE_KEY, apiKeyEl.value.trim());
+  }
+  updateMobileApiHint();
+});
+
+// ── 用户 ID 记忆 ──
+function loadSavedUser() {
+  const saved = localStorage.getItem(USER_KEY);
+  if (saved) {
+    document.getElementById('userId').value = saved;
+  }
+}
+document.getElementById('userId').addEventListener('input', () => {
+  const val = document.getElementById('userId').value.trim();
+  if (val) {
+    localStorage.setItem(USER_KEY, val);
   }
 });
 
@@ -390,7 +533,7 @@ function renderMessages() {
     messagesEl.innerHTML = `
       <div class="msg ai">
         <div class="avatar">🤖</div>
-        <div class="bubble">你好！我是 AI 知识库助手。<br>请先在左侧填入 API Key，然后输入你的问题。<br><br>我会从知识库中检索相关文档，结合上下文给你回答 ✨</div>
+        <div class="bubble">你好！我是 AI 知识库助手。<br>请先设置 API Key，然后输入你的问题。<br>（电脑端可在左侧填写，手机端发送消息时会自动弹窗提示）<br><br>我会从知识库中检索相关文档，结合上下文给你回答 ✨</div>
       </div>`;
     return;
   }
@@ -405,16 +548,38 @@ function renderMessages() {
       const div = document.createElement('div');
       div.className = 'msg ai';
       div.innerHTML = `<div class="avatar">🤖</div><div class="bubble"></div>`;
-      div.querySelector('.bubble').textContent = m.content;
+      div.querySelector('.bubble').innerHTML = marked.parse(m.content || '');
       messagesEl.appendChild(div);
+
+      // 思考过程
+      if (m.thinking && m.thinking.length > 0) {
+        const thinkWrap = document.createElement('div');
+        thinkWrap.className = 'thinking-wrap';
+        thinkWrap.innerHTML =
+          '<span class="thinking-toggle" onclick="toggleThinking(this)">💭 思考过程 ▸</span>' +
+          '<div class="thinking-steps">' + m.thinking.map(s => escHtml(s)).join('\n') + '</div>';
+        div.appendChild(thinkWrap);
+      }
+
+      // 来源文档（可折叠 + 相似度）
       if (m.sources && m.sources.length > 0) {
         const srcDiv = document.createElement('div');
         srcDiv.className = 'msg ai';
-        let html = '<div class="avatar">📚</div><div class="sources"><div class="src-title">📎 检索到的来源文档</div>';
+        let html = '<div class="avatar">📚</div><div class="sources">';
+        html += '<div class="src-title" onclick="toggleSources(this)">📎 参考来源 (' + m.sources.length + '条) ▸</div>';
+        html += '<div class="src-list">';
         m.sources.forEach(d => {
-          html += `<div class="src-item">${escHtml((d.text||'').substring(0,80))}…<span class="src-dist">距离:${(d.distance||0).toFixed(3)}</span></div>`;
+          const sim = d.similarity != null ? '<span class="sim">' + (d.similarity * 100).toFixed(1) + '%</span>' : '';
+          const date = d.date || '';
+          const source = d.source || d.category || '';
+          const text = (d.text || '').substring(0, 120);
+          const meta = [date, source].filter(Boolean).join(' · ');
+          html += '<div class="src-item">';
+          if (meta || sim) html += '<div class="src-meta">📅 ' + escHtml(meta) + (sim ? ' · 相似度 ' + sim : '') + '</div>';
+          html += '<div class="src-text">' + escHtml(text) + '…</div>';
+          html += '</div>';
         });
-        html += '</div>';
+        html += '</div></div>';
         srcDiv.innerHTML = html;
         messagesEl.appendChild(srcDiv);
       }
@@ -468,13 +633,190 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// ── 爬虫 ──
+function confirmScrape() {
+  document.getElementById('scrapeModal').classList.add('show');
+}
+function closeScrapeModal() {
+  document.getElementById('scrapeModal').classList.remove('show');
+}
+async function startScrape() {
+  closeScrapeModal();
+  const pages = parseInt(document.getElementById('scrapePages').value) || 2;
+  const btn = document.getElementById('scrapeBtn');
+  const status = document.getElementById('scrapeStatus');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 爬取中…';
+  status.textContent = '⏳ 正在爬取学校官网，请耐心等待（每页间隔 3~8 分钟）…';
+  status.className = 'scrape-status loading';
+
+  try {
+    const resp = await fetch(API_BASE + '/scrape/start?pages=' + pages, { method: 'POST' });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+      status.textContent = '✅ 爬取完成！' + data.total_articles + ' 篇文章, ' + data.total_chunks + ' 文本块入库';
+      status.className = 'scrape-status success';
+    } else {
+      status.textContent = '❌ ' + (data.detail || '爬取失败');
+      status.className = 'scrape-status error';
+    }
+  } catch (err) {
+    status.textContent = '❌ 网络错误: ' + err.message;
+    status.className = 'scrape-status error';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🕷️ 爬取官网更新';
+    setTimeout(() => { status.className = 'scrape-status'; }, 8000);
+  }
+}
+// 点击弹窗外部关闭
+document.addEventListener('click', function(e) {
+  const modal = document.getElementById('scrapeModal');
+  if (e.target === modal) closeScrapeModal();
+  const apiModal = document.getElementById('apiKeyModal');
+  if (e.target === apiModal) closeApiKeyModal();
+});
+
+// ── API Key 弹窗 ──
+function showApiKeyModal() {
+  // 如果侧边栏已有 key，预填
+  const existing = apiKeyEl.value.trim();
+  if (existing) {
+    document.getElementById('apiKeyModalInput').value = existing;
+  }
+  document.getElementById('apiKeyModal').classList.add('show');
+  setTimeout(() => document.getElementById('apiKeyModalInput').focus(), 100);
+}
+
+function closeApiKeyModal() {
+  document.getElementById('apiKeyModal').classList.remove('show');
+}
+
+function submitApiKey() {
+  const key = document.getElementById('apiKeyModalInput').value.trim();
+  if (!key) {
+    document.getElementById('apiKeyModalInput').focus();
+    return;
+  }
+  const remember = document.getElementById('apiKeyModalRemember').checked;
+
+  // 同步到侧边栏
+  apiKeyEl.value = key;
+  if (remember) {
+    localStorage.setItem(STORAGE_KEY, key);
+    rememberEl.checked = true;
+    forgetEl.style.display = 'inline';
+    keySavedHint.style.display = 'block';
+  }
+
+  // 更新移动端提示条
+  updateMobileApiHint();
+
+  // 关闭弹窗
+  closeApiKeyModal();
+
+  // 自动重新发送
+  send();
+}
+
+// ── 更新移动端 API Key 提示条 ──
+function updateMobileApiHint() {
+  const hint = document.getElementById('mobileApiHint');
+  if (!hint) return;
+  const hasKey = !!apiKeyEl.value.trim();
+  if (hasKey) {
+    hint.style.display = 'none';
+  } else {
+    hint.style.display = '';  // CSS media query 决定是否显示
+  }
+}
+
+// ── 实时更新思考步骤到 DOM ──
+function updateThinkingInDOM(aiMsgEl, steps) {
+  if (!aiMsgEl || !steps.length) return;
+  // 查找或创建思考区
+  let thinkWrap = aiMsgEl.querySelector('.thinking-wrap');
+  if (!thinkWrap) {
+    thinkWrap = document.createElement('div');
+    thinkWrap.className = 'thinking-wrap';
+    // 插入到 bubble 后面
+    const bubble = aiMsgEl.querySelector('.bubble');
+    if (bubble && bubble.nextSibling) {
+      aiMsgEl.insertBefore(thinkWrap, bubble.nextSibling);
+    } else {
+      aiMsgEl.appendChild(thinkWrap);
+    }
+  }
+  const lastStep = steps[steps.length - 1];
+  thinkWrap.innerHTML =
+    '<span class="thinking-toggle" onclick="toggleThinking(this)">💭 思考中… ▸</span>' +
+    '<div class="thinking-steps open">' + steps.map(s => escHtml(s)).join('\n') + '</div>';
+}
+
+// ── 实时渲染参考来源到 DOM ──
+function updateSourcesInDOM(aiMsgEl, docs) {
+  if (!aiMsgEl || !docs || !docs.length) return;
+  // 移除已有的来源区域
+  let existing = aiMsgEl.parentElement.querySelector('.msg.ai.sources-msg');
+  if (existing) existing.remove();
+  // 创建来源消息气泡（跟在 AI 回答后面）
+  const srcDiv = document.createElement('div');
+  srcDiv.className = 'msg ai sources-msg';
+  let html = '<div class="avatar">📚</div><div class="sources">';
+  html += '<div class="src-title" onclick="toggleSources(this)">📎 参考来源 (' + docs.length + '条) ▸</div>';
+  html += '<div class="src-list">';
+  docs.forEach(d => {
+    const sim = d.similarity != null ? '<span class="sim">' + (d.similarity * 100).toFixed(1) + '%</span>' : '';
+    const date = d.date || '';
+    const source = d.source || d.category || '';
+    const text = (d.text || '').substring(0, 120);
+    const meta = [date, source].filter(Boolean).join(' · ');
+    html += '<div class="src-item">';
+    if (meta || sim) html += '<div class="src-meta">📅 ' + escHtml(meta) + (sim ? ' · 相似度 ' + sim : '') + '</div>';
+    html += '<div class="src-text">' + escHtml(text) + '…</div>';
+    html += '</div>';
+  });
+  html += '</div></div>';
+  srcDiv.innerHTML = html;
+  aiMsgEl.after(srcDiv);
+}
+
+// 折叠/展开思考过程
+function toggleThinking(toggle) {
+  const steps = toggle.nextElementSibling;
+  const isOpen = steps.classList.contains('open');
+  if (isOpen) {
+    steps.classList.remove('open');
+    toggle.textContent = toggle.textContent.replace('▾', '▸').replace('💭 思考完成', '💭 思考过程').replace('💭 思考中…', '💭 思考过程');
+    if (!toggle.textContent.includes('▸')) toggle.textContent += ' ▸';
+  } else {
+    steps.classList.add('open');
+    toggle.textContent = toggle.textContent.replace('▸', '▾').replace('💭 思考过程', '💭 思考中…');
+    if (!toggle.textContent.includes('▾')) toggle.textContent += ' ▾';
+  }
+}
+
+// ── 折叠/展开参考来源 ──
+function toggleSources(title) {
+  const list = title.nextElementSibling;
+  const isOpen = list.classList.contains('open');
+  if (isOpen) {
+    list.classList.remove('open');
+    title.textContent = title.textContent.replace('▾', '▸');
+  } else {
+    list.classList.add('open');
+    title.textContent = title.textContent.replace('▸', '▾');
+  }
+}
+
 // ── 发送消息 ──
 async function send() {
   const apiKey = apiKeyEl.value.trim();
   const userId = document.getElementById('userId').value.trim();
   const message = inputEl.value.trim();
 
-  if (!apiKey) { alert('请先在左侧填入 API Key'); return; }
+  if (!apiKey) { showApiKeyModal(); return; }
   if (!userId)  { alert('请填入用户 ID'); return; }
   if (!message) { alert('请输入消息'); return; }
 
@@ -501,17 +843,24 @@ async function send() {
   refreshChatList();
   renderMessages();
 
-  // 找到 AI bubble
-  const allBubbles = messagesEl.querySelectorAll('.msg.ai .bubble');
-  const aiBubble = allBubbles[allBubbles.length - 1];
+  // 找到 AI 消息容器和 bubble
+  const allAiMsgs = messagesEl.querySelectorAll('.msg.ai');
+  const aiMsgEl = allAiMsgs[allAiMsgs.length - 1];  // 整条 AI 消息的 DOM 元素
+  const aiBubble = aiMsgEl.querySelector('.bubble');
   aiBubble.textContent = '思考中…';
   setStatus('streaming');
 
   try {
+    // 构建历史消息（排除当前用户消息和 AI 占位符）
+    const history = conv.messages.slice(0, -2).map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
+
     const response = await fetch(API_BASE + '/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-      body: JSON.stringify({ user_id: userId, message }),
+      body: JSON.stringify({ user_id: userId, message, history }),
     });
 
     if (!response.ok) {
@@ -527,7 +876,10 @@ async function send() {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let firstChunk = true;
+    let firstText = true;
+    let thinkingSteps = [];
+    let sources = null;
+    let aiAccum = '';  // 积累全部文本用于 markdown 渲染
 
     while (true) {
       const { done, value } = await reader.read();
@@ -542,42 +894,82 @@ async function send() {
           if (!line.startsWith('data: ')) continue;
           const payload = line.slice(6);
 
-          // 元数据事件（来源文档）
+          // 解析 JSON 事件
           if (payload.startsWith('{') && payload.includes('"type"')) {
             try {
-              const meta = JSON.parse(payload);
-              if (meta.type === 'sources' && meta.docs) {
-                aiMsg.sources = meta.docs;
+              const evt = JSON.parse(payload);
+
+              if (evt.type === 'thinking') {
+                thinkingSteps.push(evt.step);
+                // 实时更新思考步骤（如果已渲染思考区）
+                updateThinkingInDOM(aiMsgEl, thinkingSteps);
               }
-            } catch(e) {}
+              else if (evt.type === 'sources') {
+                sources = evt.docs;
+                aiMsg.sources = evt.docs;
+                updateSourcesInDOM(aiMsgEl, evt.docs);
+              }
+              else if (evt.type === 'text') {
+                if (firstText) { aiAccum = ''; firstText = false; }
+                aiAccum += evt.content;
+                aiBubble.innerHTML = marked.parse(aiAccum);
+              }
+              else if (evt.type === 'done') {
+                // 使用服务端返回的完整 steps
+                if (evt.thinking && evt.thinking.length > 0) {
+                  thinkingSteps = evt.thinking;
+                }
+                if (evt.sources && evt.sources.length > 0) {
+                  sources = evt.sources;
+                  aiMsg.sources = evt.sources;
+                }
+              }
+              else if (evt.type === 'error') {
+                aiBubble.textContent += '\n\n⚠️ ' + evt.message;
+                aiBubble.style.color = '#ff9100';
+              }
+            } catch(e) { /* 非 JSON，跳过 */ }
             continue;
           }
 
+          // 兼容旧格式：纯文本
           if (payload === '[ERROR]服务异常') {
             aiBubble.textContent += '\n\n⚠️ 服务端异常';
             aiBubble.style.color = '#ff9100';
             continue;
           }
-          if (firstChunk) { aiBubble.textContent = ''; firstChunk = false; }
+          if (firstText) { aiBubble.textContent = ''; firstText = false; }
           aiBubble.textContent += payload;
         }
       }
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    // 处理残留 buffer
     if (buffer.trim()) {
       for (const line of buffer.split('\n')) {
-        if (line.startsWith('data: ') && line.slice(6) !== '[DONE]') {
-          if (firstChunk) { aiBubble.textContent = ''; firstChunk = false; }
-          aiBubble.textContent += line.slice(6);
+        if (line.startsWith('data: ')) {
+          const payload = line.slice(6);
+          if (payload.startsWith('{') && payload.includes('"type"')) {
+            try {
+              const evt = JSON.parse(payload);
+              if (evt.type === 'text') {
+                if (firstText) { aiBubble.textContent = ''; firstText = false; }
+                aiBubble.textContent += evt.content;
+              }
+            } catch(e) {}
+          }
         }
       }
     }
-    if (firstChunk) { aiBubble.textContent = '（收到空响应）'; aiBubble.style.color = 'var(--text-dim)'; }
+    if (firstText) { aiBubble.textContent = '（收到空响应）'; aiBubble.style.color = 'var(--text-dim)'; }
 
-    aiMsg.content = aiBubble.textContent;
+    // 保存思考步骤到消息（存原始文本，渲染时再 marked.parse）
+    aiMsg.thinking = thinkingSteps;
+    aiMsg.content = aiAccum || aiBubble.textContent;
     saveConversations();
     refreshChatList();
+    renderMessages();  // 重新渲染以显示完整的思考+来源
     setStatus('on');
   } catch (err) {
     aiBubble.textContent = `❌ 网络错误: ${err.message}`;
@@ -592,6 +984,7 @@ async function send() {
 
 // ── 启动 ──
 loadSavedKey();
+loadSavedUser();
 loadConversations();
 refreshChatList();
 if (conversations.length > 0) {
@@ -628,7 +1021,7 @@ function onFileSelected(event) {
 
 async function uploadFile() {
   const apiKey = apiKeyEl.value.trim();
-  if (!apiKey) { alert('请先在左侧填入 API Key'); return; }
+  if (!apiKey) { showApiKeyModal(); return; }
   if (!selectedFile) return;
 
   const uploadArea = document.getElementById('uploadArea');
@@ -670,5 +1063,54 @@ async function uploadFile() {
   }
 }
 </script>
+<!-- ════ 爬虫确认弹窗 ════ -->
+<div class="modal-overlay" id="scrapeModal">
+  <div class="modal-box">
+    <h3>📢 确认爬取学校官网</h3>
+    <p>
+      将从 <b>河南工学院官网</b> (www.hait.edu.cn) 及各学院子站爬取最新通知公告。
+    </p>
+    <div class="scrape-summary" id="scrapeSummary">
+      ⏱️ 每类最多爬取 2 页，每页间隔 3~8 分钟（模拟真人浏览）。<br>
+      📂 包含：通知公告、学校新闻、教务处、各学院等 12 个分类。<br>
+      ⚠️ 过程较慢，请耐心等待，不要关闭页面。
+    </div>
+    <div style="margin-top:8px;font-size:12px;color:var(--text-dim);">
+      每类页数：<input type="number" id="scrapePages" value="2" min="1" max="10"
+        style="width:60px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);
+               background:var(--bg);color:var(--text);font-size:12px;margin-left:4px;">
+    </div>
+    <div class="modal-buttons">
+      <button class="modal-btn-cancel" onclick="closeScrapeModal()">取消</button>
+      <button class="modal-btn-confirm" id="confirmScrapeBtn" onclick="startScrape()">✓ 确认爬取</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ API Key 弹窗 ════ -->
+<div class="modal-overlay" id="apiKeyModal">
+  <div class="modal-box">
+    <h3>🔑 请填写 API Key</h3>
+    <p style="font-size:13px;color:var(--text-dim);line-height:1.7;">
+      使用 DeepSeek API 需要提供 API Key。<br>
+      可在 <a href="https://platform.deepseek.com/api_keys" target="_blank" style="color:var(--accent);">platform.deepseek.com</a> 获取。
+    </p>
+    <input type="password" id="apiKeyModalInput" class="api-modal-input"
+           placeholder="输入你的 API Key…" autocomplete="off"
+           onkeydown="if(event.key==='Enter'){event.preventDefault();submitApiKey();}">
+    <div class="api-modal-remember">
+      <input type="checkbox" id="apiKeyModalRemember" checked>
+      <span>记住 API Key（保存到本地浏览器）</span>
+    </div>
+    <div class="api-modal-hint">
+      💡 提示：也可以在左侧边栏填写（电脑端可见）。
+    </div>
+    <div class="modal-buttons">
+      <button class="modal-btn-cancel" onclick="closeApiKeyModal()">取消</button>
+      <button class="modal-btn-confirm" onclick="submitApiKey()">✓ 保存并发送</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

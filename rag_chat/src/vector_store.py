@@ -64,6 +64,11 @@ class VectorStore:
         result = self.collection.get(where={"source": source})
         return len(result["ids"]) if result["ids"] else 0
 
+    def count_by_category(self, category: str) -> int:
+        """按 category 过滤，返回指定分类的文档数"""
+        result = self.collection.get(where={"category": category})
+        return len(result["ids"]) if result["ids"] else 0
+
     def delete_by_source(self, source: str):
         """按 source 删除文档（覆盖更新前先清理旧数据）"""
         self.collection.delete(where={"source": source})

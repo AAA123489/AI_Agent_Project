@@ -39,3 +39,15 @@ def parse_docx(file_path: str) -> tuple[str, dict]:
 
     return (full_text, {"author": author, "year": year})
 
+
+def parse_html(file_path: str) -> tuple[str, dict]:
+    """解析 .html/.htm 文件，返回 (文本, 元数据)。
+    委托给 campus_scraper.html_parser 实现 HTML 清洗。
+    """
+    from pathlib import Path
+    from campus_scraper.html_parser import parse_html as _parse
+
+    html = Path(file_path).read_text(encoding="utf-8", errors="replace")
+    text, meta = _parse(html, url=f"file://{file_path}")
+    return text, meta
+

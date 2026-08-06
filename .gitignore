@@ -17,7 +17,19 @@ chroma_db/
 
 # SQLite 数据库文件
 *.db
+*.sqlite3
+*.db-shm
+*.db-wal
 
 # 工具缓存
 .ruff_cache/
 .pytest_cache/
+
+# 聊天日志（含真实对话内容）
+chat_logs*.txt
+
+# 爬虫抓取的文档数据（可再生，不入库）
+scraped_docs/
+
+# 外网穿透工具二进制
+ngrok.exe
