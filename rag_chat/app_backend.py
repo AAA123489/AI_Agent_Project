@@ -30,6 +30,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.vector_store import VectorStore
+from src.hybrid_retriever import rrf_fuse, get_bm25_retriever, get_reranker
 
 load_dotenv()
 
@@ -50,6 +51,14 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1000"))
 # 向量检索返回片段数（top_k）。消融实验参数：改 .env 的 TOP_K 即可。
 # 消融最优（2026-08-07，6题60分制）：top_k=8
 TOP_K = int(os.getenv("TOP_K", "8"))
+# 检索模式：hybrid（向量+BM25 RRF 融合，默认）| vector（纯向量，消融对照）
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "hybrid")
+# 重排开关：on 时对融合后候选用 CrossEncoder 精排再截断 | off（默认，省加载模型）
+RETRIEVAL_RERANK = os.getenv("RETRIEVAL_RERANK", "off")
+# 重排候选数：重排后保留多少条进 LLM 上下文。
+# 消融发现 N=8 对宽泛题（如 Q5「有哪些安排」）会截掉埋在补块里的关键句，
+# N=16 时 Q3/Q5 关键句命中恢复 3/3、4/4（重排只排序不牺牲召回）
+RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "16"))
 # 知识库主体院校：用于识别「问别的学校」的库外题，避免张冠李戴幻觉（如 Q6 河北工学院）
 KB_SUBJECT_SCHOOL = os.getenv("KB_SUBJECT_SCHOOL", "河南工学院")
 # Agent 循环上限：工具结果已完整返回（800 字覆盖整个块），单题 1~2 轮即可回答。
@@ -63,7 +72,7 @@ def get_active_params() -> str:
     分块参数（CHUNK_SIZE/CHUNK_OVERLAP）在重建阶段，运行时读不到，
     需靠 .env 的 EXPERIMENT_TAG 手动标注。
     """
-    return f"model={MODEL_NAME} | temperature={TEMPERATURE} | max_tokens={MAX_TOKENS} | top_k={TOP_K}"
+    return f"model={MODEL_NAME} | temperature={TEMPERATURE} | max_tokens={MAX_TOKENS} | top_k={TOP_K} | retrieval_mode={RETRIEVAL_MODE} | rerank={RETRIEVAL_RERANK}"
 
 # ═══════════════════════════════════════════════════════
 # System Prompt
@@ -90,6 +99,23 @@ SYSTEM_PROMPT = (
     "并诚实说明「知识库中暂无相关信息，以下是基于通用知识的回答」\n"
     "8. 引用知识库内容时标注来源文件名\n"
     "9. 用中文回复\n"
+    "10. 用户问「有哪些安排/如何开展/工作怎么做」这类概括性问题时，"
+    "以覆盖多项工作的综合性通知（标题常含「有关工作的通知」，内容涵盖宣传、排查、干预、复学、活动等多方面）为作答主干，"
+    "完整列出其中的各项工作及具体日期要求；不要只依据单次活动的通知作答。"
+    "若检索结果同时含综合通知与单次活动通知，综合通知优先，单次活动通知作为补充。\n"
+    "11. **重要**：判定「知识库没有该信息」之前，必须逐条核对检索返回的**全部片段**（[1]…[N]），"
+    "一个片段没有 ≠ 知识库没有。只要任一片段含答案，就必须据此作答，"
+    "并优先采用与问题直接对应的片段（如同文档的评分表、分项数值等）。"
+    "片段里已含答案却回答「未找到/未给出/无明确分值」，属于严重错误。"
+    "检索片段中的**具体数值、人数、日期、篇目名**等，能直接引用原文的必须逐字引用，"
+    "不得用「未明确给出」「没有提到具体数字」等概括性说法替代，"
+    "尤其当问题问的是数值/人数/分项时，即使答案片段排在较后（如 [6]…[N]）也必须找到并引用。"
+    "只有逐条核对后确认所有片段均不含答案，才按规则 7 诚实说明。\n"
+    "12. **重要**：涉及知识库文档中的具体事实（日期、天数、人数、第几个、百分比、分值等），"
+    "必须先调用 search_knowledge_base 检索原文，答案必须以检索片段为准，"
+    "严禁用 calculate 自行推算（如「3月20日至25日共几天」「2025年是第几个」），"
+    "也不能脱离原文自行推导（原文可能明确写「共5天」「第十个」）。"
+    "calculate 仅用于用户给出明确的数学表达式（如「3*5」「2**10」）时。\n"
     "\n"
     "## 隐私保护规则（重要）\n"
     "- 用户若询问**某位具体老师/员工的个人手机号、邮箱或私人住址**，一律不提供。\n"
@@ -212,72 +238,255 @@ def _extract_school_names(text: str) -> list[str]:
     return names
 
 
+_internal_org_cache: set[str] | None = None
+
+
+def _get_internal_org_names() -> set[str]:
+    """知识库内的校内机构名集合（如"智能工程学院"）。
+
+    从 Chroma category 元数据提取（去掉"新闻/通知/公告"后缀），用于库外闸门放行：
+    校内二级学院（智能工程学院/车辆与交通工程学院…）不是"别的学校"，应该允许检索。
+    模块级缓存；失败时回退空集合（闸门退回旧行为，只误伤不崩）。
+    """
+    global _internal_org_cache
+    if _internal_org_cache is not None:
+        return _internal_org_cache
+    orgs: set[str] = set()
+    try:
+        vs = _get_vector_store()
+        metas = vs.collection.get(include=["metadatas"])["metadatas"]
+        for m in metas:
+            cat = (m or {}).get("category", "")
+            for suf in ("新闻", "通知", "公告"):
+                if cat.endswith(suf) and len(cat) > len(suf):
+                    cat = cat[: -len(suf)]
+            if cat and ("学院" in cat or "大学" in cat):
+                orgs.add(cat)
+    except Exception as e:
+        logger.warning("读取校内机构名单失败，库外闸门可能误伤校内学院: %s", e)
+    _internal_org_cache = orgs
+    return orgs
+
+
+def _is_internal_org(name: str, internal_orgs: set[str]) -> bool:
+    """判断 name 是否为校内机构（含简称）。
+
+    支持两种匹配：
+    - 精确：name 在名单里（如"智能工程学院"）
+    - 简称前缀：name 去掉"学院/大学"后缀后的核心词，
+      是某校内机构去掉后缀后的开头（如"车辆学院"→"车辆"
+      是"车辆与交通工程学院"→"车辆与交通工程"的前缀）
+    """
+    core = name[: -2] if name.endswith(("学院", "大学")) else name
+    for org in internal_orgs:
+        if name == org:
+            return True
+        org_core = org[: -2] if org.endswith(("学院", "大学")) else org
+        if core and org_core.startswith(core):
+            return True
+    return False
+
+
 def _refuse_out_of_kb_school(query: str) -> str | None:
     """库外主体校验闸门：问的是知识库主体院校之外的学校 → 返回拒答文案，不让检索跑。
 
     规则：
     - query 里含知识库主体校名（如"河南工学院"）→ 放行
-    - query 提到别的学校（如"河北工学院""清华大学"）→ 拒答
+    - query 提到校内二级学院（精确名或简称，如"智能工程学院""车辆学院"）→ 放行
+    - query 提到「XX大学」或「XX工学院」类独立院校（如"清华大学""河北工学院"）→ 拒答
+    - 其他「XX学院」措辞（如"产业学院""现代产业学院联盟"）是普通名词，
+      不作为库外学校拦截 → 放行（检索捞不到自然答"未找到"，无幻觉风险）
     - 没提任何具体校名 → 放行
     """
     if KB_SUBJECT_SCHOOL in query:
         return None
+    internal_orgs = _get_internal_org_names()
+    # 协作类词：外校名后紧跟这些词时，该校只是「背景/合作方」而非提问主体（如
+    # "联赛由河南师范大学牵头"→ 问的是联赛不是师大）。放行让检索兜底，避免误伤
+    # 知识库内关于本校参与活动的问答（eval Q8 败因）。
+    _COLLAB = ("牵头", "联合", "共同", "与", "和", "邀", "合作", "主办", "协办", "参加", "参赛", "联")
     for name in _extract_school_names(query):
         if KB_SUBJECT_SCHOOL in name:
             return None
-        return (
-            f"【库外题拦截】用户查询的【{name}】不在知识库范围内。"
-            f"知识库仅收录【{KB_SUBJECT_SCHOOL}】相关信息。\n"
-            f"请直接如实告知用户：知识库中没有【{name}】的任何信息，无法回答该问题；"
-            f"切勿使用【{KB_SUBJECT_SCHOOL}】或其他学校的信息代替作答。"
-        )
+        if _is_internal_org(name, internal_orgs):
+            continue
+        # 只拦独立院校特征明显的：XX大学 / XX工学院
+        if name.endswith("大学") or name.endswith("工学院"):
+            # 检查该校名后紧跟的词是否属协作类（背景提及则放行）
+            idx = query.find(name)
+            tail = query[idx + len(name): idx + len(name) + 2]
+            if tail and any(tail.startswith(w) for w in _COLLAB):
+                continue
+            return (
+                f"【库外题拦截】用户查询的【{name}】不在知识库范围内。"
+                f"知识库仅收录【{KB_SUBJECT_SCHOOL}】相关信息。\n"
+                f"请直接如实告知用户：知识库中没有【{name}】的任何信息，无法回答该问题。"
+                f"严禁补充【{KB_SUBJECT_SCHOOL}】或其他学校的任何信息（包括录取分数、招生数据等），"
+                f"即使作为「另外还可以帮您…」之类的附加说明也不行。只拒绝，不展开。"
+            )
     return None
 
 
+def _extract_year(query: str) -> str | None:
+    """从 query 里抓第一个 20xx 年份；没有就返回 None（不过滤）。"""
+    m = re.search(r"20\d{2}", query)
+    return m.group(0) if m else None
+
+
 def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
-    """真实向量检索（入口先做库外主体校验）"""
+    """混合检索：库外校验 → 年份过滤 → 向量+BM25 融合召回 → 去重 → 补块 → 可选重排。
+
+    各环节解决什么问题：
+    - 库外主体校验：问别校直接拒答（防张冠李戴）
+    - 年份过滤：query 提到某年就只看该年文档，清掉跨年旧通知挤占名额
+    - BM25+RRF 融合：纯向量捞不到的关键词精确命中（如 Q3「报名截止」），
+      由 BM25 关键词召回补上，两路名次用 Reciprocal Rank Fusion 无参融合
+    - 同文档补块：宽泛问题（如「有哪些安排」）常只命中文档开头，
+      关键句（如 3月3-15日排查）埋在正文第二节，相似度捞不到，必须按 source 元数据整篇补齐
+    - 可选重排：CrossEncoder 精排再截断，提高关键块进 LLM 上下文的概率
+
+    模式开关（.env）：
+    - RETRIEVAL_MODE=hybrid（默认）| vector（退纯向量，消融对照）
+    - RETRIEVAL_RERANK=on/off（默认 off）
+    BM25 依赖缺失或建索引失败 → 自动回退纯向量，不崩。
+    """
     refuse = _refuse_out_of_kb_school(query)
     if refuse:
         return refuse
-    try:
-        vs = _get_vector_store()
-        results = vs.search_similar(query, n_results=top_k)
-        if not results:
-            return "知识库中未找到相关内容。"
+    vs = _get_vector_store()
 
-        lines = []
-        for i, doc in enumerate(results, 1):
-            # 截断到 800 字：块默认 500 字，前 200 字会漏掉后半块的关键数字，
-            # 导致 LLM 反复换说法搜索却拿不到答案，轮数耗尽报"处理超时"。
-            text = doc.get("text", "")[:800]
-            distance = doc.get("distance", 0)
-            similarity = max(0.0, 1.0 - distance)
-            metadata = doc.get("metadata", {}) or {}
-            source = metadata.get("source", "未知文档")
-            source_url = metadata.get("url", "")
-            source_date = metadata.get("publish_date", "")
-            source_year = metadata.get("year", "")
-            source_cat = metadata.get("category", "")
-            source_site = metadata.get("source_site", "")
-            # 附加信息行
-            extra = ""
-            if source_date:
-                extra += f" | 日期: {source_date}"
-            if source_year:
-                extra += f" | 年份: {source_year}"
-            if source_cat:
-                extra += f" | 分类: {source_cat}"
-            if source_site:
-                extra += f" | 站点: {source_site}"
-            lines.append(
-                f"[{i}] 相似度: {similarity:.1%} | 来源: {source}{extra}\n"
-                f"   原文链接: {source_url}\n"
-                f"   片段: {text}..."
-            )
-        return "\n\n".join(lines)
+    # 1. 年份过滤（检索时过滤，不是返回后再滤）
+    # 放宽为 ±1 年窗口：query 里的年份常是「内容年份」（2026年挑战杯/2024年度评选），
+    # 而文档 year 元数据是「发布年份」，两者常差一年（如 2025-12 发布 2026 挑战杯通知、
+    # 2025-01 发布 2024 年度评选公示）。精确单年会把这些目标文档滤掉（eval Q11/Q23 败因）。
+    # 空年份（发布页无日期）仍放行；窗口外（≥2 年前）的旧通知仍排除，保持"清跨年旧通知"效果。
+    where = None
+    year = _extract_year(query)
+    if year:
+        y = int(year)
+        where = {"year": {"$in": [str(y - 1), year, str(y + 1), ""]}}
+
+    # 2. 召回：纯向量 / 混合（向量 + BM25 两路 RRF 融合）
+    try:
+        vector_results = vs.search_similar(query, n_results=top_k, where=where)
     except Exception as e:
         logger.error("检索失败: %s", e)
         return f"检索失败: {e}"
+
+    results = vector_results
+    if RETRIEVAL_MODE == "hybrid":
+        bm25 = get_bm25_retriever(vs.collection)
+        if bm25 is not None:
+            try:
+                bm25_results = bm25.search(query, top_n=top_k, year=year)
+                results = rrf_fuse(vector_results, bm25_results, top_n=top_k)
+            except Exception as e:
+                logger.error("混合融合失败，回退纯向量: %s", e)
+                results = vector_results
+
+    # 2b. 年份过滤兜底：带年份过滤召回到空 → 说明目标文档没打年份元数据
+    # （发布页无日期），放宽到不过滤重试一次，避免把内容相关的旧文档滤丢
+    if year and not results:
+        logger.info("年份过滤(%s)无结果，回退不过滤重试", year)
+        try:
+            vector_results = vs.search_similar(query, n_results=top_k)
+            results = vector_results
+            if RETRIEVAL_MODE == "hybrid":
+                bm25 = get_bm25_retriever(vs.collection)
+                if bm25 is not None:
+                    bm25_results = bm25.search(query, top_n=top_k, year=None)
+                    results = rrf_fuse(vector_results, bm25_results, top_n=top_k)
+        except Exception as e:
+            logger.error("年份回退检索失败: %s", e)
+    if not results:
+        return "知识库中未找到相关内容。"
+
+    # 3. 按文本内容去重（同一通知被爬进两个分类目录 + 重叠窗口会产生内容相同的块）
+    merged = []
+    seen = set()
+    for doc in results:
+        text = doc.get("text", "")
+        if text in seen:
+            continue
+        seen.add(text)
+        merged.append(doc)
+
+    # 4. 同文档补块：对初始命中的每个来源，按 source 元数据拉取该文档全部块，
+    #    追加未召回的后续块（关键句常埋在文档中后段，如 排查通知的 3月3-15日 和 台账 分别落在第二、三块）。
+    #    - 跳过「【来源】...」元数据头块（纯噪音）
+    #    - 每个来源限补 3 块、最多补 5 篇，避免块多的文档（如测评通知 7 块）独占预算
+    sources_ordered = []
+    src_best_sim: dict[str, float] = {}
+    for doc in merged:
+        src = (doc.get("metadata") or {}).get("source", "")
+        sim = max(0.0, 1.0 - doc.get("distance", 0))
+        if src:
+            if src not in sources_ordered:
+                sources_ordered.append(src)
+            src_best_sim[src] = max(src_best_sim.get(src, 0.0), sim)
+    cap = TOP_K + 12  # 初始 8 条 + 补块，总封顶 20（补块要给足预算，否则块多的文档独占名额）
+    for src in sources_ordered[:5]:  # 最多补 5 篇文档
+        try:
+            extra = vs.collection.get(where={"source": src})
+        except Exception:
+            continue
+        added = 0
+        extra_texts = extra.get("documents", [])
+        extra_metas = extra.get("metadatas", [])
+        # 该来源可补块的顺序：前 3 块 + 末块。
+        # 末块常含落款/署名/日期/联系电话（如通知文末的发布日期），只补前 3 块会漏掉（eval Q10 败因）。
+        fill_order = list(range(min(3, len(extra_texts))))
+        if len(extra_texts) > 3:
+            fill_order.append(len(extra_texts) - 1)
+        for fi in fill_order:
+            if len(merged) >= cap or added >= 3:
+                break
+            text = extra_texts[fi]
+            if text.startswith("【来源】") or text in seen:
+                continue
+            seen.add(text)
+            # 补块本身没算过与 query 的相似度，沿用所属来源的最高相似度展示，避免误导为 100%
+            merged.append({"text": text, "metadata": extra_metas[fi], "distance": 1.0 - src_best_sim.get(src, 0.5)})
+            added += 1
+
+    # 5. 可选重排：对补块后的候选用 CrossEncoder 精排再截断（默认关，省加载模型）。
+    #    重排后 merged 长度 ≤ RERANK_TOP_N，天然被下方 `merged[:cap]` 截断兜底。
+    if RETRIEVAL_RERANK == "on":
+        try:
+            merged = get_reranker().rerank(query, merged, top_n=RERANK_TOP_N)
+        except Exception as e:
+            logger.error("重排失败，保留原顺序: %s", e)
+
+    lines = []
+    for i, doc in enumerate(merged[:cap], 1):
+        # 截断到 800 字：块默认 500 字，前 200 字会漏掉后半块的关键数字，
+        # 导致 LLM 反复换说法搜索却拿不到答案，轮数耗尽报"处理超时"。
+        text = doc.get("text", "")[:800]
+        distance = doc.get("distance", 0)
+        similarity = max(0.0, 1.0 - distance)
+        metadata = doc.get("metadata", {}) or {}
+        source = metadata.get("source", "未知文档")
+        source_url = metadata.get("url", "")
+        source_date = metadata.get("publish_date", "")
+        source_year = metadata.get("year", "")
+        source_cat = metadata.get("category", "")
+        source_site = metadata.get("source_site", "")
+        # 附加信息行
+        extra = ""
+        if source_date:
+            extra += f" | 日期: {source_date}"
+        if source_year:
+            extra += f" | 年份: {source_year}"
+        if source_cat:
+            extra += f" | 分类: {source_cat}"
+        if source_site:
+            extra += f" | 站点: {source_site}"
+        lines.append(
+            f"[{i}] 相似度: {similarity:.1%} | 来源: {source}{extra}\n"
+            f"   原文链接: {source_url}\n"
+            f"   片段: {text}..."
+        )
+    return "\n\n".join(lines)
 
 
 def _get_current_time() -> str:

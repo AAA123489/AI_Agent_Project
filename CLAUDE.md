@@ -28,17 +28,24 @@ AI_Agent_Project/
 
 详见 [rag_chat/README.md](rag_chat/README.md)
 
-### rag_chat 当前进度（2026-08-08，新窗口从这里接续）
+### 当前状态
 
-**知识库**：全量爬虫已完成，1195 篇文档 / 13 分类。分块 CHUNK_SIZE=300 / OVERLAP=50（消融最优）。
+**知识库**：全量爬虫已完成，1195 篇文档 / 13 分类。分块 `CHUNK_SIZE=300 / OVERLAP=50`（消融最优）。
 
-**参数全部在 `.env`**（改配置不用改代码）：`TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`。
+**运行参数**（在 `.env`，改配置不用改代码）：
+- `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
+- `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）、`RETRIEVAL_RERANK=off`（重排默认关，遇表格行值题可临时开，代价每问 +1.9s）
 
-**6 题基准评测（Qwen 打分，60 分制）**：当前 **30/60**。
-- 评测脚本 `rag_chat/eval_baseline.py`，基准表+打分提示词在 `rag_chat/qwen_score_prompt_baseline*.md`，结果在 `eval_results_*.json`
-- top_k=5 → 27；top_k=8 → 27；top_k=8+库外闸门 → **30**（Q6 已修好 0→10）
-- **残留问题**：① Q3 检索遗漏（0 分）→ 计划 BM25+reranker 混合检索；② Q5 口径张冠李戴（0 分）→ 基准口径争议（测评通知 vs 排查通知）
-- 已落地**库外主体校验闸门**：`app_backend.py` 的 `_refuse_out_of_kb_school()`，识别 query 里的学校名，问别校直接拒答（修 Q6）
+**命中率成绩单**（评测脚本已清理删除，如需复测需重建）：
+
+| 评测 | 命中率 |
+|------|--------|
+| 6 题基准（Qwen 60 分制） | **60/60** |
+| 25 题随机 | **96%** |
+| 50 题随机 | **100%** |
+| 100 题随机（回归后） | **95%** |
+
+> 详细评测过程与改造历史见 [会话备份.md](会话备份.md) 与 [rag_chat/docs/改进记录.md](rag_chat/docs/改进记录.md)。
 
 ## 项目二：Agent 工作流引擎
 

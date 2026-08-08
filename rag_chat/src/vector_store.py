@@ -84,10 +84,11 @@ class VectorStore:
         else:
             logger.info("collection 已为空，无需清空")
 
-    def search_similar(self, query: str, n_results: int = 3):
+    def search_similar(self, query: str, n_results: int = 3, where: dict | None = None):
         results = self.collection.query(
             query_texts=[query],
-            n_results=n_results
+            n_results=n_results,
+            where=where,
         )
         formatted_results = []
         for i in range(len(results['ids'][0])):

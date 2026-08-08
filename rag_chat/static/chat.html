@@ -263,11 +263,6 @@
   }
   .modal-box h3 { color: var(--accent); margin-bottom: 12px; font-size: 16px; }
   .modal-box p { font-size: 13px; color: var(--text-dim); line-height: 1.7; margin-bottom: 20px; }
-  .modal-box .scrape-summary {
-    font-size: 11px; color: var(--warn); margin-top: 8px;
-    padding: 8px 12px; background: rgba(210,153,29,.1);
-    border-radius: 6px; border-left: 3px solid var(--warn);
-  }
   .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; }
   .modal-buttons button {
     padding: 8px 18px; border-radius: 8px; border: none;
@@ -294,24 +289,6 @@
   }
   .thinking-steps.open { display: block; }
 
-  /* ════ 爬虫按钮 ════ */
-  .scrape-btn {
-    margin: 8px 16px; padding: 10px;
-    border-radius: 8px; border: 1px dashed var(--border);
-    background: transparent; color: var(--text-dim);
-    font-size: 13px; cursor: pointer; transition: all .2s;
-    text-align: center; width: calc(100% - 32px);
-    font-family: inherit;
-  }
-  .scrape-btn:hover { border-color: var(--warn); color: var(--warn); }
-  .scrape-btn:disabled { opacity: .4; cursor: not-allowed; }
-  .scrape-status {
-    font-size: 10px; margin: 4px 16px 0; padding: 4px 8px; border-radius: 4px;
-    display: none; text-align: center;
-  }
-  .scrape-status.success { display:block; background: #003d1a; color: var(--success); }
-  .scrape-status.error { display:block; background: #3d0000; color: var(--accent); }
-  .scrape-status.loading { display:block; background: #1a1a00; color: var(--warn); }
 </style>
 </head>
 <body>
@@ -341,11 +318,6 @@
       <input type="file" id="fileInput" accept=".txt,.md,.pdf,.docx" onchange="onFileSelected(event)">
     </div>
     <div class="upload-status" id="uploadStatus"></div>
-
-    <button class="scrape-btn" id="scrapeBtn" onclick="confirmScrape()">
-      🕷️ 爬取官网更新
-    </button>
-    <div class="scrape-status" id="scrapeStatus"></div>
   </div>
 
   <button class="new-chat-btn" onclick="newChat()">＋ 新建对话</button>
@@ -657,47 +629,8 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
-// ── 爬虫 ──
-function confirmScrape() {
-  document.getElementById('scrapeModal').classList.add('show');
-}
-function closeScrapeModal() {
-  document.getElementById('scrapeModal').classList.remove('show');
-}
-async function startScrape() {
-  closeScrapeModal();
-  const pages = parseInt(document.getElementById('scrapePages').value) || 2;
-  const btn = document.getElementById('scrapeBtn');
-  const status = document.getElementById('scrapeStatus');
-
-  btn.disabled = true;
-  btn.textContent = '⏳ 爬取中…';
-  status.textContent = '⏳ 正在爬取学校官网，请耐心等待（每页间隔 3~8 分钟）…';
-  status.className = 'scrape-status loading';
-
-  try {
-    const resp = await fetch(API_BASE + '/scrape/start?pages=' + pages, { method: 'POST' });
-    const data = await resp.json();
-    if (data.status === 'ok') {
-      status.textContent = '✅ 爬取完成！' + data.total_articles + ' 篇文章, ' + data.total_chunks + ' 文本块入库';
-      status.className = 'scrape-status success';
-    } else {
-      status.textContent = '❌ ' + (data.detail || '爬取失败');
-      status.className = 'scrape-status error';
-    }
-  } catch (err) {
-    status.textContent = '❌ 网络错误: ' + err.message;
-    status.className = 'scrape-status error';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '🕷️ 爬取官网更新';
-    setTimeout(() => { status.className = 'scrape-status'; }, 8000);
-  }
-}
 // 点击弹窗外部关闭
 document.addEventListener('click', function(e) {
-  const modal = document.getElementById('scrapeModal');
-  if (e.target === modal) closeScrapeModal();
   const apiModal = document.getElementById('apiKeyModal');
   if (e.target === apiModal) closeApiKeyModal();
 });
@@ -1087,29 +1020,6 @@ async function uploadFile() {
   }
 }
 </script>
-<!-- ════ 爬虫确认弹窗 ════ -->
-<div class="modal-overlay" id="scrapeModal">
-  <div class="modal-box">
-    <h3>📢 确认爬取学校官网</h3>
-    <p>
-      将从 <b>河南工学院官网</b> (www.hait.edu.cn) 及各学院子站爬取最新通知公告。
-    </p>
-    <div class="scrape-summary" id="scrapeSummary">
-      ⏱️ 每类最多爬取 2 页，每页间隔 3~8 分钟（模拟真人浏览）。<br>
-      📂 包含：通知公告、学校新闻、教务处、各学院等 12 个分类。<br>
-      ⚠️ 过程较慢，请耐心等待，不要关闭页面。
-    </div>
-    <div style="margin-top:8px;font-size:12px;color:var(--text-dim);">
-      每类页数：<input type="number" id="scrapePages" value="2" min="1" max="10"
-        style="width:60px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);
-               background:var(--bg);color:var(--text);font-size:12px;margin-left:4px;">
-    </div>
-    <div class="modal-buttons">
-      <button class="modal-btn-cancel" onclick="closeScrapeModal()">取消</button>
-      <button class="modal-btn-confirm" id="confirmScrapeBtn" onclick="startScrape()">✓ 确认爬取</button>
-    </div>
-  </div>
-</div>
 
 <!-- ════ API Key 弹窗 ════ -->
 <div class="modal-overlay" id="apiKeyModal">

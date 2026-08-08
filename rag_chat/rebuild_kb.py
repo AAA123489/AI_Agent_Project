@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import io
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -27,6 +28,12 @@ from pathlib import Path
 # Windows 控制台 GBK 兼容
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+# 离线加载嵌入模型：HF_HUB_OFFLINE 跳过 hf-mirror.com 网络校验。
+# 阶段1 后期 hf-mirror 网络异常，模型加载时的 HTTP 校验挂起/segfault；
+# 模型本地缓存齐全，离线加载更稳更快。
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -120,7 +127,9 @@ def main() -> None:
 
         year = (doc["date"] or "")[:4]
         metadatas = [{
-            "source": doc["_path"].stem,   # 标签一：文件名（.txt 文件名）
+            # 标签一：相对路径（分类/文件名）。不能用文件名 stem——跨分类同名文档
+            # source 会撞车，导致补块时两篇被当成一篇（如 学生处通知 vs 通知公告）。
+            "source": doc["_path"].relative_to(SCRAPED_DIR).as_posix(),
             "category": doc["category"],
             "source_site": doc["source_site"],
             "publish_date": doc["date"],
@@ -128,7 +137,11 @@ def main() -> None:
             "url": doc["url"],
         } for _ in chunks]
 
-        doc_hash = hashlib.sha256(doc["title"].encode("utf-8")).hexdigest()[:8]
+        # ID 哈希用「相对文件路径」而非标题：跨分类同名文档（标题相同）会因 sha256(title)
+        # 撞 ID 被 Chroma 后写覆盖，导致整篇文档丢失（如 学生处通知 vs 通知公告 的同名通知）。
+        # 用路径哈希可让不同分类下的同名文档都入库。
+        rel_path = doc["_path"].relative_to(SCRAPED_DIR).as_posix()
+        doc_hash = hashlib.sha256(rel_path.encode("utf-8")).hexdigest()[:8]
         ids = [f"rebuild_{doc_hash}_{i}" for i in range(len(chunks))]
 
         vs.save_documents(chunks, metadatas, ids)
