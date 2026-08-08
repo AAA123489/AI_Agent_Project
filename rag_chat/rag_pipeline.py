@@ -2,7 +2,7 @@ import hashlib
 import logging
 
 from src.vector_store import VectorStore
-from text_splitter import RecursiveTextSplitter
+from text_splitter import RecursiveTextSplitter, sanitize_privacy
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,10 @@ def ingest_document(file_path: str, author: str = "unknown", year: str = "", vec
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
 
-    # 2. 调用切分器
+    # 2. 隐私脱敏（删除个人手机号/邮箱，再切分入库）
+    text = sanitize_privacy(text)
+
+    # 3. 调用切分器
     logger.info("正在切分文本...")
     splitter = RecursiveTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_text(text)

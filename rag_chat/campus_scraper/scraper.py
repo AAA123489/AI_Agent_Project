@@ -44,6 +44,19 @@ def _random_delay() -> float:
     return random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
 
 
+def resolve_next_url(current_url: str, next_path: str) -> str:
+    """
+    基于"当前列表页 URL"拼接下一页 URL。
+
+    动易 CMS 的下一页链接常是裸路径（如 "310.htm"、"tzgg/81.htm"），
+    必须相对当前列表页目录解析（保留 /tzgg、/index 等前缀），
+    不能基于站点根目录 urljoin，否则会拼成 /310.htm → 404 提前停爬。
+    """
+    if next_path.startswith("http"):
+        return next_path
+    return urljoin(current_url, next_path.lstrip("/"))
+
+
 def _is_within_date_range(date_str: str) -> bool:
     """检查日期是否在 DATE_FILTER_DAYS 天内。"""
     if not date_str:
@@ -268,11 +281,7 @@ async def scrape_category(
 
         # ── 分页：有没有下一页？ ──
         if pagination.get("next_url"):
-            next_path = pagination["next_url"]
-            if next_path.startswith("http"):
-                current_url = next_path
-            else:
-                current_url = urljoin(base_url, next_path)
+            current_url = resolve_next_url(current_url, pagination["next_url"])
         else:
             logger.info("  🏁 [%s] 无更多分页，完成", name)
             break

@@ -4,6 +4,34 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def sanitize_privacy(text: str) -> str:
+    """隐私脱敏：删除文本中的个人手机号和邮箱地址。
+
+    背景：官网公开公告里混有个别老师的手机号、邮箱，原本分散在各页
+    无人注意；RAG 把几百篇聚合到一个知识库后，用户搜"张老师"就可能
+    扒出联系方式，这是二次聚合带来的隐私擦边球。因此在文档入库
+    （切分）之前统一执行脱敏。
+
+    原则：
+    - 直接删除，不留占位符（避免 LLM 在占位处瞎编数字）
+    - 只处理个人联系方式（11 位手机号 / 邮箱）；**办公室座机保留**
+      （0373-3691067 这类是公开办公电话，对学生有用，不属于个人隐私）
+    """
+    if not text:
+        return text
+
+    # ── 11 位大陆手机号（前后用数字边界，避免误伤长编号） ──
+    text = re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "", text)
+
+    # ── 邮箱（完整匹配多级域名，如 xx@hait.edu.cn） ──
+    text = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "", text)
+
+    # ── 清理脱敏后残留的多余空白 ──
+    text = re.sub(r" {2,}", " ", text)
+
+    return text
+
+
 class RecursiveTextSplitter:
     def __init__(self, chunk_size: int, chunk_overlap: int):
 

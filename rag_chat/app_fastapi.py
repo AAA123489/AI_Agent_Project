@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -28,9 +27,10 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from app_backend import (
-    SYSTEM_PROMPT, TOOL_DEFINITIONS, MODEL_NAME, API_URL, MAX_ROUNDS,
-    execute_tool, _parse_sources, _call_llm, _get_vector_store,
-    get_kb_stats, ingest_files, run_scraper_pipeline,
+    _get_vector_store,
+    get_kb_stats, ingest_files, run_scraper_pipeline, get_active_params,
+    AgentLoop, ThinkingEvent, ToolCallEvent, ToolResultEvent,
+    TextEvent, DoneEvent, ErrorEvent,
 )
 # Redis（可选，用于服务端对话历史持久化）
 try:
@@ -77,128 +77,43 @@ class ChatRequest(BaseModel):
 
 async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id: str = ""):
     """
-    Agent 循环的 SSE 版本。
-    每步产生 {"type": "thinking"|"sources"|"text"|"done"|"error", ...} 事件。
+    Agent 循环的 SSE 版本（事件驱动）。
+    AgentLoop 产出事件对象，这里转换为前端 SSE 帧
+    （{"type": "thinking"|"sources"|"text"|"done"|"error", ...}）。
     user_id 用于 Redis 持久化历史（可选）。
     """
-    thinking_steps: list[str] = []
-    sources: list[dict] = []
-    step_no = 0
-    start_time = time.time()
-
-    def ts() -> str:
-        return datetime.now().strftime("%H:%M:%S")
-
-    def add_thinking(text: str) -> str:
-        nonlocal step_no
-        step_no += 1
-        step = f"[{ts()}] Step {step_no}: {text}"
-        thinking_steps.append(step)
-        return step
-
-    # ── 解析历史消息 ──
-    def _normalize_content(content) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    parts.append(block)
-            return "".join(parts)
-        return str(content) if content else ""
-
-    messages: list[dict] = []
-    for msg in (history or []):
-        role = msg.get("role", "user")
-        content = _normalize_content(msg.get("content", ""))
-        if not content or content.startswith("⏳"):
-            continue
-        messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": message})
-
-    # ── 初次事件：用户消息已接收 ──
-    step = add_thinking(f"接收 Query: [{message[:60]}{'...' if len(message) > 60 else ''}]")
-    yield {"type": "thinking", "step": step}
+    agent = AgentLoop(api_key=api_key)
+    last_answer = ""
 
     try:
-        for rnd in range(MAX_ROUNDS):
-            step = add_thinking(f"第 {rnd + 1} 轮推理 — 调用 LLM...")
-            yield {"type": "thinking", "step": step}
-
-            response = await _call_llm(messages, api_key)
-
-            if response.get("tool_uses"):
-                for tu in response["tool_uses"]:
-                    name = tu["name"]
-                    inp = tu.get("input", {})
-                    tid = tu.get("id", f"tool_{rnd}")
-
-                    step = add_thinking(
-                        f"🔧 调用工具: `{name}({json.dumps(inp, ensure_ascii=False)})`"
-                    )
-                    yield {"type": "thinking", "step": step}
-
-                    result_text = execute_tool(name, inp)
-
-                    if name == "search_knowledge_base":
-                        sources = _parse_sources(result_text)
-                        if sources:
-                            yield {"type": "sources", "docs": sources}
-                        step = add_thinking(f"📋 检索到 {len(sources)} 条相关结果")
-                    else:
-                        step = add_thinking(f"📋 返回: {result_text[:120]}")
-
-                    yield {"type": "thinking", "step": step}
-
-                    messages.append({
-                        "role": "assistant",
-                        "content": [{
-                            "type": "tool_use", "id": tid,
-                            "name": name, "input": inp,
-                        }],
-                    })
-                    messages.append({
-                        "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": tid,
-                            "content": result_text,
-                        }],
-                    })
-            else:
-                answer = response.get("text", "")
-                elapsed = time.time() - start_time
-                step = add_thinking(
-                    f"✅ 生成完成 | {rnd + 1} 轮 | 耗时 {elapsed:.1f}s"
-                )
+        async for event in agent.run_stream(message, history):
+            if isinstance(event, ThinkingEvent):
+                yield {"type": "thinking", "step": event.step}
+            elif isinstance(event, ToolCallEvent):
+                step = f"🔧 调用工具: `{event.tool}({json.dumps(event.args, ensure_ascii=False)})`"
                 yield {"type": "thinking", "step": step}
-
+            elif isinstance(event, ToolResultEvent):
+                if event.sources:
+                    yield {"type": "sources", "docs": event.sources}
+                    step = f"📋 检索到 {len(event.sources)} 条相关结果"
+                else:
+                    step = f"📋 返回: {event.output[:120]}"
+                yield {"type": "thinking", "step": step}
+            elif isinstance(event, TextEvent):
+                last_answer = event.content
                 # 分块输出答案（模拟流式）
                 chunk_size = 30
-                for i in range(0, len(answer), chunk_size):
-                    chunk = answer[i:i + chunk_size]
+                for i in range(0, len(event.content), chunk_size):
+                    chunk = event.content[i:i + chunk_size]
                     yield {"type": "text", "content": chunk}
                     await asyncio.sleep(0.015)
-
-                yield {"type": "done", "thinking": thinking_steps, "sources": sources}
-
+            elif isinstance(event, DoneEvent):
+                yield {"type": "done", "thinking": event.thinking, "sources": event.sources}
                 # ── 持久化：Redis + TXT ──
-                await _save_to_redis(user_id, message, answer)
-                _log_to_txt(user_id, message, answer)
-                return
-
-        # 达到最大轮数
-        step = add_thinking(f"⚠️ 达到最大轮数 {MAX_ROUNDS}，强制终止")
-        yield {"type": "thinking", "step": step}
-        fallback = "抱歉，处理超时，请简化问题后重试。"
-        yield {"type": "text", "content": fallback}
-        yield {"type": "done", "thinking": thinking_steps, "sources": sources}
-        await _save_to_redis(user_id, message, fallback)
-        _log_to_txt(user_id, message, fallback)
-
+                await _save_to_redis(user_id, message, last_answer)
+                _log_to_txt(user_id, message, last_answer)
+            elif isinstance(event, ErrorEvent):
+                yield {"type": "error", "message": event.message}
     except Exception as e:
         logger.exception("Agent SSE 异常")
         yield {"type": "error", "message": str(e)}
@@ -230,18 +145,33 @@ async def _load_redis_history(user_id: str, count: int = 20) -> list[dict]:
 
 
 # ── TXT 对话日志 ──
+# 按 .env 的 EXPERIMENT_TAG 分文件（消融实验：每套参数一份日志，方便对比）。
+# 未设置标签时用默认 chat_logs.txt；每次记录自动附带当前运行时参数摘要。
 
-_LOG_FILE = _PROJECT_ROOT / "chat_logs.txt"
+_DEFAULT_LOG_FILE = _PROJECT_ROOT / "chat_logs.txt"
+_EXPERIMENT_TAG = os.getenv("EXPERIMENT_TAG", "").strip()
 
 def _log_to_txt(user_id: str, question: str, answer: str) -> None:
     """将一轮对话追加写入 TXT 文件（静默失败，不影响对话）"""
     if not user_id:
         return
     try:
+        # 有实验标签 → 分文件；否则默认一个文件
+        log_file = _DEFAULT_LOG_FILE
+        if _EXPERIMENT_TAG:
+            log_file = _PROJECT_ROOT / f"chat_logs_{_EXPERIMENT_TAG}.txt"
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sep = "=" * 70
-        entry = sep + "\n" + f"📅 {now}  👤 {user_id}\n" + f"❓ 问：{question}\n" + f"🤖 答：{answer}\n" + sep + "\n\n"
-        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+        params = get_active_params()
+        entry = (
+            sep + "\n"
+            + f"📅 {now}  👤 {user_id}\n"
+            + f"⚙️ 参数: {params}" + (f" | 实验组: {_EXPERIMENT_TAG}" if _EXPERIMENT_TAG else "") + "\n"
+            + f"❓ 问：{question}\n"
+            + f"🤖 答：{answer}\n"
+            + sep + "\n\n"
+        )
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(entry)
     except Exception:
         pass  # 写文件失败不影响对话

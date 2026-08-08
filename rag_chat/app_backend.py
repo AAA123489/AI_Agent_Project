@@ -8,6 +8,7 @@ app_backend.py — Agent 后端封装
 """
 
 import ast
+import asyncio
 import json
 import logging
 import operator as op
@@ -15,8 +16,10 @@ import os
 import re
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import AsyncGenerator
 
 import aiohttp
 from dotenv import load_dotenv
@@ -39,7 +42,28 @@ logger = logging.getLogger("gradio_agent")
 API_KEY = os.getenv("API_KEY", "")
 API_URL = os.getenv("API_URL", "https://api.deepseek.com/anthropic/v1/messages")
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v4-pro")
-MAX_ROUNDS = 10
+# 生成随机度（0~2）：0 = 完全保守，2 = 最大发散。RAG 问答默认 0.3 偏严谨
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
+# 回答长度上限（tokens）：上限而非目标，只有超出才会截断。
+# 消融实验参数：改 .env 的 MAX_TOKENS 即可，无需动代码（当前默认 1000）
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1000"))
+# 向量检索返回片段数（top_k）。消融实验参数：改 .env 的 TOP_K 即可。
+# 消融最优（2026-08-07，6题60分制）：top_k=8
+TOP_K = int(os.getenv("TOP_K", "8"))
+# 知识库主体院校：用于识别「问别的学校」的库外题，避免张冠李戴幻觉（如 Q6 河北工学院）
+KB_SUBJECT_SCHOOL = os.getenv("KB_SUBJECT_SCHOOL", "河南工学院")
+# Agent 循环上限：工具结果已完整返回（800 字覆盖整个块），单题 1~2 轮即可回答。
+# 设 6 兜底：正常单题 2~3 轮完成，极端复杂题也不会干等到 10 轮。
+MAX_ROUNDS = 6
+
+
+def get_active_params() -> str:
+    """返回当前生效的运行时参数摘要（用于对话日志标注消融实验组）。
+
+    分块参数（CHUNK_SIZE/CHUNK_OVERLAP）在重建阶段，运行时读不到，
+    需靠 .env 的 EXPERIMENT_TAG 手动标注。
+    """
+    return f"model={MODEL_NAME} | temperature={TEMPERATURE} | max_tokens={MAX_TOKENS} | top_k={TOP_K}"
 
 # ═══════════════════════════════════════════════════════
 # System Prompt
@@ -65,7 +89,14 @@ SYSTEM_PROMPT = (
     "7. **重要**：知识库检索不到相关内容时，请基于你自己的知识直接回答用户，"
     "并诚实说明「知识库中暂无相关信息，以下是基于通用知识的回答」\n"
     "8. 引用知识库内容时标注来源文件名\n"
-    "9. 用中文回复"
+    "9. 用中文回复\n"
+    "\n"
+    "## 隐私保护规则（重要）\n"
+    "- 用户若询问**某位具体老师/员工的个人手机号、邮箱或私人住址**，一律不提供。\n"
+    "  统一回复：「您好，本系统不提供个人联系方式查询，请前往河南工学院官网 www.hait.edu.cn 查找官方电话。」\n"
+    "- 禁止编造任何电话号码、邮箱或住址。若检索结果中没有联系方式，不得自行补全。\n"
+    "- 禁止编造任何日期、时间。若检索原文与元数据日期中均无明确时间，如实回答「知识库未记录具体时间」，建议用户查看官网原文；若只有文件发布日期，须注明「这是文件发布时间，并非政策中的时间」。\n"
+    "- 学校的**官方办公电话**（如教务处、各学院办公室等公开渠道发布的座机）可以正常回答，但只能依据知识库原文，不得杜撰。"
 )
 
 # ═══════════════════════════════════════════════════════
@@ -163,8 +194,51 @@ def _get_vector_store() -> VectorStore:
 # 工具实现
 # ═══════════════════════════════════════════════════════
 
-def _search_knowledge_base(query: str, top_k: int = 5) -> str:
-    """真实向量检索"""
+# 泛称前缀：含这些字的"XX学院"通常是泛指（哪些学院/各学院），不是具体校名，跳过
+_SCHOOL_NAME_NOISE_CHARS = set("哪各本该这那我这你那谁每某多同几两")
+
+def _extract_school_names(text: str) -> list[str]:
+    """从文本中提取形如「XX大学/XX学院」的学校名候选。
+
+    - 用 (?!生) 排除"大学生"这类误匹配
+    - 前缀含泛指字（哪些/各/本…）的视为非校名，跳过
+    """
+    names = []
+    for m in re.finditer(r"([一-龥]{2,8}?)(大学(?!生)|学院)", text):
+        prefix, suffix = m.group(1), m.group(2)
+        if any(ch in prefix for ch in _SCHOOL_NAME_NOISE_CHARS):
+            continue
+        names.append(prefix + suffix)
+    return names
+
+
+def _refuse_out_of_kb_school(query: str) -> str | None:
+    """库外主体校验闸门：问的是知识库主体院校之外的学校 → 返回拒答文案，不让检索跑。
+
+    规则：
+    - query 里含知识库主体校名（如"河南工学院"）→ 放行
+    - query 提到别的学校（如"河北工学院""清华大学"）→ 拒答
+    - 没提任何具体校名 → 放行
+    """
+    if KB_SUBJECT_SCHOOL in query:
+        return None
+    for name in _extract_school_names(query):
+        if KB_SUBJECT_SCHOOL in name:
+            return None
+        return (
+            f"【库外题拦截】用户查询的【{name}】不在知识库范围内。"
+            f"知识库仅收录【{KB_SUBJECT_SCHOOL}】相关信息。\n"
+            f"请直接如实告知用户：知识库中没有【{name}】的任何信息，无法回答该问题；"
+            f"切勿使用【{KB_SUBJECT_SCHOOL}】或其他学校的信息代替作答。"
+        )
+    return None
+
+
+def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
+    """真实向量检索（入口先做库外主体校验）"""
+    refuse = _refuse_out_of_kb_school(query)
+    if refuse:
+        return refuse
     try:
         vs = _get_vector_store()
         results = vs.search_similar(query, n_results=top_k)
@@ -173,19 +247,24 @@ def _search_knowledge_base(query: str, top_k: int = 5) -> str:
 
         lines = []
         for i, doc in enumerate(results, 1):
-            text = doc.get("text", "")[:200]
+            # 截断到 800 字：块默认 500 字，前 200 字会漏掉后半块的关键数字，
+            # 导致 LLM 反复换说法搜索却拿不到答案，轮数耗尽报"处理超时"。
+            text = doc.get("text", "")[:800]
             distance = doc.get("distance", 0)
             similarity = max(0.0, 1.0 - distance)
             metadata = doc.get("metadata", {}) or {}
             source = metadata.get("source", "未知文档")
             source_url = metadata.get("url", "")
             source_date = metadata.get("publish_date", "")
+            source_year = metadata.get("year", "")
             source_cat = metadata.get("category", "")
             source_site = metadata.get("source_site", "")
             # 附加信息行
             extra = ""
             if source_date:
                 extra += f" | 日期: {source_date}"
+            if source_year:
+                extra += f" | 年份: {source_year}"
             if source_cat:
                 extra += f" | 分类: {source_cat}"
             if source_site:
@@ -327,7 +406,7 @@ def _parse_sources(result_text: str) -> list[dict]:
     sources = []
     pattern = (
         r'\[(\d+)\] 相似度: ([\d.]+)% \| 来源: (.+?)(?: \| 日期: (.+?))?'
-        r'(?: \| 分类: (.+?))?(?: \| 站点: (.+?))?\n'
+        r'(?: \| 年份: (.+?))?(?: \| 分类: (.+?))?(?: \| 站点: (.+?))?\n'
         r'   原文链接: (.+?)\n'
         r'   片段: (.+?)\.\.\.'
     )
@@ -337,10 +416,11 @@ def _parse_sources(result_text: str) -> list[dict]:
             "similarity": float(match.group(2)) / 100,
             "source": match.group(3).strip(),
             "date": (match.group(4) or "").strip(),
-            "category": (match.group(5) or "").strip(),
-            "site": (match.group(6) or "").strip(),
-            "url": (match.group(7) or "").strip(),
-            "text": match.group(8).strip(),
+            "year": (match.group(5) or "").strip(),
+            "category": (match.group(6) or "").strip(),
+            "site": (match.group(7) or "").strip(),
+            "url": (match.group(8) or "").strip(),
+            "text": match.group(9).strip(),
         })
     return sources
 
@@ -357,23 +437,39 @@ async def _call_llm(messages: list[dict], api_key: str) -> dict:
     }
     payload = {
         "model": MODEL_NAME,
-        "max_tokens": 1000,
+        "max_tokens": MAX_TOKENS,
+        "temperature": TEMPERATURE,
         "system": SYSTEM_PROMPT,
         "messages": messages,
         "tools": TOOL_DEFINITIONS,
+        # 禁用思考模式：deepseek 默认返回 thinking 块，工具调用后回传 assistant
+        # 必须原样带 thinking+signature，否则报 400。RAG 查询场景无需思考链，直接禁用
+        "thinking": {"type": "disabled"},
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(API_URL, headers=headers, json=payload) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                logger.error("LLM API 错误 (%d): %s", resp.status, error_text[:200])
-                return {
-                    "text": f"API 调用失败 ({resp.status})",
-                    "tool_uses": [],
-                    "stop_reason": "end_turn",
-                }
-            data = await resp.json()
+        try:
+            async with session.post(
+                API_URL, headers=headers, json=payload,
+                # 显式超时：deepseek 单轮生成最长约 120s，超时返回友好提示而非挂死
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error("LLM API 错误 (%d): %s", resp.status, error_text[:200])
+                    return {
+                        "text": f"API 调用失败 ({resp.status})",
+                        "tool_uses": [],
+                        "stop_reason": "end_turn",
+                    }
+                data = await resp.json()
+        except asyncio.TimeoutError:
+            logger.error("LLM API 调用超时 (>120s)")
+            return {
+                "text": "API 调用超时，请稍后重试。",
+                "tool_uses": [],
+                "stop_reason": "end_turn",
+            }
 
     content_blocks = data.get("content", [])
     text_parts = []
@@ -396,7 +492,190 @@ async def _call_llm(messages: list[dict], api_key: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════
-# Agent 循环（异步生成器，每步 yield 一次给 Gradio）
+# Agent 事件类型 —— 连接 Agent Loop 和表现层（SSE / Rich）
+# 对齐项目二工作流引擎：事件驱动，for-step 循环。
+# 六个事件类型与项目二一致；ThinkingEvent/DoneEvent 因项目一
+# 前端协议需要携带格式化好的步骤文本与完整来源。
+# ═══════════════════════════════════════════════════════
+
+@dataclass
+class ThinkingEvent:
+    """每轮推理开始时触发。step 为格式化好的完整步骤文本（前端直接展示）。"""
+    step: str
+
+
+@dataclass
+class ToolCallEvent:
+    """Agent 决定调用某个工具。"""
+    tool: str
+    args: dict
+
+
+@dataclass
+class ToolResultEvent:
+    """工具执行完毕。sources 为项目一扩展：检索工具附带结构化来源。"""
+    tool: str
+    success: bool
+    output: str
+    sources: list | None = None
+
+
+@dataclass
+class TextEvent:
+    """Agent 最终回复文本。"""
+    content: str
+
+
+@dataclass
+class DoneEvent:
+    """任务正常完成，携带完整思考步骤与来源（前端落盘用）。"""
+    thinking: list
+    sources: list
+
+
+@dataclass
+class ErrorEvent:
+    """发生错误（API 故障 / 超时 / 达到上限）。"""
+    message: str
+
+
+# 所有事件类型的联合（用于类型标注）
+AgentEvent = ThinkingEvent | ToolCallEvent | ToolResultEvent | TextEvent | DoneEvent | ErrorEvent
+
+
+class AgentLoop:
+    """Agent 核心循环 —— 事件驱动版（对齐项目二工作流引擎）。
+
+    流程：用户输入 → LLM 分析 → 调工具 / 给出答案 → 循环 → 返回结果
+
+    支持两种调用方式：
+    - run(): 返回最终文本
+    - run_stream(): async generator，yield 事件对象（SSE / 前端消费）
+    """
+
+    def __init__(
+        self,
+        api_key: str = API_KEY,
+        max_rounds: int = MAX_ROUNDS,
+    ):
+        self.api_key = api_key
+        self.max_rounds = max_rounds
+
+    # ── 公开 API ──────────────────────────────────────────
+
+    async def run(self, message: str, history: list[dict] | None = None) -> str:
+        """执行一次对话，返回最终文本。内部收集 run_stream 的事件。"""
+        final_text = ""
+        async for event in self.run_stream(message, history):
+            if isinstance(event, TextEvent):
+                final_text = event.content
+        return final_text
+
+    async def run_stream(
+        self,
+        message: str,
+        history: list[dict] | None = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """事件驱动主循环：for-step 保证有限步数终止，每步 yield 事件对象。"""
+        thinking_steps: list[str] = []
+        sources: list[dict] = []
+        step_no = 0
+        start_time = time.time()
+
+        def now() -> str:
+            return datetime.now().strftime("%H:%M:%S")
+
+        def add_step(text: str) -> str:
+            nonlocal step_no
+            step_no += 1
+            step = f"[{now()}] Step {step_no}: {text}"
+            thinking_steps.append(step)
+            return step
+
+        def _normalize_content(content) -> str:
+            """历史消息 content 可能是 list[dict] 或 str，统一转成 str"""
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        parts.append(block)
+                return "".join(parts)
+            return str(content) if content else ""
+
+        # ── 构建消息列表 ──
+        messages: list[dict] = []
+        for msg in (history or []):
+            role = msg.get("role", "user")
+            content = _normalize_content(msg.get("content", ""))
+            if not content or content.startswith("⏳"):
+                continue
+            messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message})
+
+        # ── 初次事件：用户消息已接收 ──
+        yield ThinkingEvent(
+            step=add_step(f"接收 Query: [{message[:60]}{'...' if len(message) > 60 else ''}]")
+        )
+
+        for rnd in range(self.max_rounds):
+            yield ThinkingEvent(step=add_step(f"第 {rnd + 1} 轮推理 — 调用 LLM..."))
+
+            response = await _call_llm(messages, self.api_key)
+
+            if response.get("tool_uses"):
+                for tu in response["tool_uses"]:
+                    name = tu["name"]
+                    inp = tu.get("input", {})
+                    tid = tu.get("id", f"tool_{rnd}")
+
+                    yield ToolCallEvent(tool=name, args=inp)
+
+                    result_text = execute_tool(name, inp)
+
+                    if name == "search_knowledge_base":
+                        ev_sources = _parse_sources(result_text)
+                        sources = ev_sources
+                        yield ToolResultEvent(
+                            tool=name, success=True,
+                            output=result_text, sources=ev_sources,
+                        )
+                        add_step(f"📋 检索到 {len(ev_sources)} 条相关结果")
+                    else:
+                        yield ToolResultEvent(
+                            tool=name, success=True,
+                            output=result_text, sources=None,
+                        )
+                        add_step(f"📋 返回: {result_text[:120]}")
+
+                    messages.append({
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}],
+                    })
+                    messages.append({
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tid, "content": result_text}],
+                    })
+            else:
+                answer = response.get("text", "")
+                elapsed = time.time() - start_time
+                add_step(f"✅ 生成完成 | {rnd + 1} 轮 | 耗时 {elapsed:.1f}s")
+                yield TextEvent(content=answer)
+                yield DoneEvent(thinking=list(thinking_steps), sources=list(sources))
+                return
+
+        # 达到最大轮数
+        add_step(f"⚠️ 达到最大轮数 {self.max_rounds}，强制终止")
+        fallback = "抱歉，处理超时，请简化问题后重试。"
+        yield TextEvent(content=fallback)
+        yield DoneEvent(thinking=list(thinking_steps), sources=list(sources))
+
+
+# ═══════════════════════════════════════════════════════
+# Agent 循环（异步生成器，每步 yield 一次给 Gradio）—— 旧版，仅作兼容保留
 # ═══════════════════════════════════════════════════════
 
 async def run_agent(message: str, history: list[dict], api_key: str):

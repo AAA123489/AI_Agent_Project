@@ -13,16 +13,18 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import aiohttp
+
 # ── 路径：确保能导入同目录模块 ──
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.vector_store import VectorStore
-from text_splitter import RecursiveTextSplitter
+from text_splitter import RecursiveTextSplitter, sanitize_privacy
 
-from .config import CATEGORIES, MAX_LIST_PAGES
-from .scraper import scrape_all_categories
+from .config import CATEGORIES, MAX_LIST_PAGES, USER_AGENT
+from .scraper import scrape_category
 from .models import ArticleMetadata, KnowledgeBaseStats
 
 logger = logging.getLogger("campus_scraper.pipeline")
@@ -31,7 +33,9 @@ logger = logging.getLogger("campus_scraper.pipeline")
 _SCRAPED_DOCS_DIR = _PROJECT_ROOT / "scraped_docs"
 
 # ── 分块参数 ──
-CHUNK_SIZE = 500
+# 消融实验最优（2026-08-07，6题60分制）：chunk=300 / overlap=50 / top_k=8 → 46分
+# 详见 README「消融实验结果」。
+CHUNK_SIZE = 300
 CHUNK_OVERLAP = 50
 
 # ── 知识库集合名（修复 bug：统一用 my_rag_collection） ──
@@ -58,7 +62,8 @@ def _save_clean_text(article: ArticleMetadata) -> Path:
     )
 
     file_path = cat_dir / f"{safe_title}.txt"
-    file_path.write_text(header + article.clean_text, encoding="utf-8")
+    # 落盘的 .txt 也执行隐私脱敏（与入库内容保持一致）
+    file_path.write_text(header + sanitize_privacy(article.clean_text), encoding="utf-8")
     return file_path
 
 
@@ -84,19 +89,22 @@ def _split_and_embed(
             f"【日期】{article.publish_date}\n"
             f"【标题】{article.title}\n"
         )
-        full_text = prefix + article.clean_text
+        full_text = prefix + sanitize_privacy(article.clean_text)
 
         chunks = splitter.split_text(full_text)
         if not chunks:
             continue
 
         metadatas = []
+        # 年份标签：从发布日期的 ISO 格式中提取（如 "2026-08-05" → "2026"）
+        year = (article.publish_date or "")[:4]
         for _ in chunks:
             metadatas.append({
-                "source": article.title,
+                "source": article.title,          # 标签一：文件名（文章标题）
                 "category": article.category,
                 "source_site": article.source_site,
                 "publish_date": article.publish_date,
+                "year": year,                     # 标签二：发布年份
                 "url": article.url,
             })
 
@@ -143,45 +151,57 @@ async def run_scrape_pipeline(
     total_articles = 0
     total_chunks = 0
 
-    # ── Step 1: 爬取 ──
+    # ── Step 1: 逐分类爬取 → 立即清洗/保存/嵌入 ──
+    # 设计：每爬完一个分类马上落盘入库（而非全部爬完再统一入库），
+    # 这样任何时刻中断/断电，已爬内容都已安全入库，不会被"已标记未入库"丢失。
     if progress_callback:
         await progress_callback({"status": "scraping", "message": "正在爬取学校官网..."})
 
-    scrape_results = await scrape_all_categories(max_pages=max_pages)
-
-    # ── Step 2: 清洗 + 保存 + 嵌入（按分类逐批处理，每爬完一个分类就入库） ──
-    for category_name, articles in scrape_results.items():
-        if not articles:
-            continue
-
-        if progress_callback:
-            await progress_callback({
-                "status": "processing",
-                "message": f"正在处理: {category_name}（{len(articles)} 篇）...",
-            })
-
-        # 保存清洗后的 .txt
-        for article in articles:
+    headers = {"User-Agent": USER_AGENT}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for category_cfg in CATEGORIES:
+            category_name = category_cfg["name"]
             try:
-                _save_clean_text(article)
+                articles = await scrape_category(
+                    category_cfg, session, max_pages=max_pages,
+                )
             except Exception as e:
-                logger.error("保存文件失败: %s → %s", article.title, e)
-                errors.append(f"保存失败 [{article.title}]: {e}")
+                logger.exception("❌ [%s] 爬取出错: %s", category_name, e)
+                errors.append(f"爬取出错 [{category_name}]: {e}")
+                continue
 
-        # 分块 + 嵌入
-        try:
-            chunks = _split_and_embed(articles, vector_store)
-            total_chunks += chunks
-            total_articles += len(articles)
-        except Exception as e:
-            logger.exception("嵌入失败: %s", e)
-            errors.append(f"嵌入失败 [{category_name}]: {e}")
+            if not articles:
+                logger.info("⏭ [%s] 无新增文章，跳过入库", category_name)
+                continue
 
-        if progress_callback:
-            await progress_callback({
-                "status": "done_category",
-                "message": f"✅ {category_name}: {len(articles)} 篇 → {total_chunks} 块",
-            })
+            if progress_callback:
+                await progress_callback({
+                    "status": "processing",
+                    "message": f"正在处理: {category_name}（{len(articles)} 篇）...",
+                })
+
+            # 保存清洗后的 .txt
+            for article in articles:
+                try:
+                    _save_clean_text(article)
+                except Exception as e:
+                    logger.error("保存文件失败: %s → %s", article.title, e)
+                    errors.append(f"保存失败 [{article.title}]: {e}")
+
+            # 分块 + 嵌入
+            try:
+                chunks = _split_and_embed(articles, vector_store)
+                total_chunks += chunks
+                total_articles += len(articles)
+            except Exception as e:
+                logger.exception("嵌入失败: %s", e)
+                errors.append(f"嵌入失败 [{category_name}]: {e}")
+
+            if progress_callback:
+                await progress_callback({
+                    "status": "done_category",
+                    "message": f"✅ {category_name}: {len(articles)} 篇 → {total_chunks} 块",
+                })
 
     if progress_callback:
         await progress_callback({
@@ -284,6 +304,9 @@ async def ingest_uploaded_files(
             if not text.strip():
                 errors.append(f"文件无内容: {path.name}")
                 continue
+
+            # ── 隐私脱敏（删除个人手机号/邮箱，再分块） ──
+            text = sanitize_privacy(text)
 
             # ── 分块 ──
             chunks = splitter.split_text(text)
