@@ -18,6 +18,7 @@ hybrid_retriever.py — 混合检索三件套（BM25 + RRF 融合 + Reranker）
 
 import logging
 import os
+import threading
 
 # 国内访问 HuggingFace 需走镜像（与 vector_store 一致；
 # transformers 下载 CrossEncoder 模型时也读这个环境变量）
@@ -109,15 +110,19 @@ class Bm25Retriever:
 
 # 模块级单例缓存（懒加载）
 _bm25_retriever: Bm25Retriever | None = None
+# 单例构建锁：检索已丢线程池，并发首访可能同时触发建索引，加锁防双建竞态
+_bm25_build_lock = threading.Lock()
 
 
 def get_bm25_retriever(collection) -> Bm25Retriever | None:
     """获取全局 BM25 单例。首次调用建索引；失败返回 None（调用方回退纯向量）。"""
     global _bm25_retriever
     if _bm25_retriever is None:
-        _bm25_retriever = Bm25Retriever()
-        if not _bm25_retriever.build(collection):
-            _bm25_retriever = None
+        with _bm25_build_lock:
+            if _bm25_retriever is None:
+                _bm25_retriever = Bm25Retriever()
+                if not _bm25_retriever.build(collection):
+                    _bm25_retriever = None
     return _bm25_retriever
 
 
@@ -188,10 +193,13 @@ class Reranker:
 
 # 模块级单例缓存
 _reranker: Reranker | None = None
+_reranker_build_lock = threading.Lock()
 
 
 def get_reranker() -> Reranker:
     global _reranker
     if _reranker is None:
-        _reranker = Reranker()
+        with _reranker_build_lock:
+            if _reranker is None:
+                _reranker = Reranker()
     return _reranker

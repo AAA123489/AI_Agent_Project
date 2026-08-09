@@ -179,26 +179,6 @@
   .input-area button:active { transform:scale(.97); }
   .input-area button:disabled { opacity:.4; cursor:not-allowed; }
 
-  /* 上传区域 */
-  .upload-area {
-    margin: 12px 16px; padding: 10px 12px;
-    background: var(--card); border-radius: 8px;
-    border: 1px dashed var(--border); cursor: pointer;
-    text-align: center; font-size: 12px; color: var(--text-dim);
-    transition: all .2s;
-  }
-  .upload-area:hover { border-color: var(--accent); color: var(--accent); }
-  .upload-area.uploading { opacity: .6; pointer-events: none; }
-  .upload-area .upload-icon { font-size: 20px; display: block; margin-bottom: 2px; }
-  .upload-area input[type="file"] { display: none; }
-  .upload-status {
-    font-size: 10px; margin: 4px 16px 0; padding: 4px 8px; border-radius: 4px;
-    display: none; text-align: center;
-  }
-  .upload-status.success { display:block; background: #003d1a; color: var(--success); }
-  .upload-status.error { display:block; background: #3d0000; color: var(--accent); }
-  .upload-status.loading { display:block; background: #1a1a00; color: var(--warn); }
-
   .messages::-webkit-scrollbar,
   .chat-list::-webkit-scrollbar { width:5px; }
   .messages::-webkit-scrollbar-track,
@@ -310,14 +290,6 @@
     <label>👤 用户 ID
       <input type="text" id="userId" placeholder="首次访问自动分配" value="">
     </label>
-
-    <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
-      <span class="upload-icon">📁</span>
-      上传文档到知识库<br>
-      <span style="font-size:10px;color:var(--text-dim)">支持 .txt / .md / .pdf / .docx</span>
-      <input type="file" id="fileInput" accept=".txt,.md,.pdf,.docx" onchange="onFileSelected(event)">
-    </div>
-    <div class="upload-status" id="uploadStatus"></div>
   </div>
 
   <button class="new-chat-btn" onclick="newChat()">＋ 新建对话</button>
@@ -358,7 +330,7 @@
   </div>
 
   <div class="input-area">
-    <textarea id="input" rows="1" placeholder="输入你的问题… (Enter 发送，Shift+Enter 换行)"
+    <textarea id="input" rows="1" maxlength="8000" placeholder="输入你的问题… (Enter 发送，Shift+Enter 换行)"
       onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
     <button id="sendBtn" onclick="send()">发送</button>
   </div>
@@ -966,59 +938,6 @@ if (conversations.length > 0) {
     statusEl.textContent = '🔴 无法连接服务器';
   }
 })();
-
-// ── 文件上传 ──
-let selectedFile = null;
-
-function onFileSelected(event) {
-  selectedFile = event.target.files[0];
-  if (!selectedFile) return;
-  uploadFile();
-}
-
-async function uploadFile() {
-  const apiKey = apiKeyEl.value.trim();
-  if (!apiKey) { showApiKeyModal(); return; }
-  if (!selectedFile) return;
-
-  const uploadArea = document.getElementById('uploadArea');
-  const uploadStatus = document.getElementById('uploadStatus');
-
-  uploadArea.classList.add('uploading');
-  uploadStatus.textContent = '⏳ 正在上传并入库…';
-  uploadStatus.className = 'upload-status loading';
-
-  try {
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
-    const response = await fetch(API_BASE + '/upload', {
-      method: 'POST',
-      headers: { 'X-API-Key': apiKey },
-      body: formData,
-    });
-
-    const result = await response.json();
-
-    if (response.ok) {
-      uploadStatus.textContent = '✅ ' + result.filename + ' 入库成功！'
-        + (result.replaced ? '(覆盖 ' + result.replaced_count + ' 条)' : '')
-        + ' 新增 ' + result.chunks + ' 块';
-      uploadStatus.className = 'upload-status success';
-      setTimeout(() => { uploadStatus.className = 'upload-status'; }, 5000);
-    } else {
-      uploadStatus.textContent = '❌ ' + (result.detail || '上传失败');
-      uploadStatus.className = 'upload-status error';
-    }
-  } catch (err) {
-    uploadStatus.textContent = '❌ 网络错误: ' + err.message;
-    uploadStatus.className = 'upload-status error';
-  } finally {
-    uploadArea.classList.remove('uploading');
-    selectedFile = null;
-    document.getElementById('fileInput').value = '';
-  }
-}
 </script>
 
 <!-- ════ API Key 弹窗 ════ -->

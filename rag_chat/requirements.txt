@@ -26,6 +26,10 @@ propcache==0.5.2
 pydantic==2.13.4
 pydantic_core==2.46.4
 pypdf==6.1.0
+# PDF 表格结构化提取（pypdf 只提取线性文本，表格结构用 pdfplumber 补上）
+pdfplumber>=0.11
+# PDF 图片型（扫描件）OCR 兜底：提取不到文本的页渲染成图 + RapidOCR 中文识别
+rapidocr-onnxruntime>=1.4
 python-docx==1.2.0
 python-dotenv==1.2.2
 redis==7.1.0

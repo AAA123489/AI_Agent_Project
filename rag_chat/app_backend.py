@@ -64,6 +64,12 @@ KB_SUBJECT_SCHOOL = os.getenv("KB_SUBJECT_SCHOOL", "河南工学院")
 # Agent 循环上限：工具结果已完整返回（800 字覆盖整个块），单题 1~2 轮即可回答。
 # 设 6 兜底：正常单题 2~3 轮完成，极端复杂题也不会干等到 10 轮。
 MAX_ROUNDS = 6
+# 历史消息截断（防上下文超长）：只保留最近 MAX_HISTORY_TURNS 条，
+# 每条 content 截断到 MAX_HISTORY_CHARS 字符（DeepSeek 上下文窗口有限）。
+MAX_HISTORY_TURNS = 10
+MAX_HISTORY_CHARS = 2000
+# LLM 调用重试次数（含首次）：网络错误/HTTP 5xx/请求阶段超时重试 1 次，降低公网抖动导致的失败
+LLM_MAX_RETRIES = 2
 
 
 def get_active_params() -> str:
@@ -116,6 +122,18 @@ SYSTEM_PROMPT = (
     "严禁用 calculate 自行推算（如「3月20日至25日共几天」「2025年是第几个」），"
     "也不能脱离原文自行推导（原文可能明确写「共5天」「第十个」）。"
     "calculate 仅用于用户给出明确的数学表达式（如「3*5」「2**10」）时。\n"
+    "13. **重要**：用户问「有哪些安排/如何开展/有哪些内容/具体要求/怎么做」这类需要完整列举的问题时，"
+    "回答必须把检索片段中出现的**每一条**具体安排及其对应时间（日期/时间段/截止日）逐一列出，"
+    "**不得只挑几条作答而漏掉其余**。先扫一遍全部片段，把每条「项目+时间」列成清单再组织答案；"
+    "回答完后自查一遍：片段中出现过的每个日期（如 X月X日前、X月X日—X月X日）是否都已出现在答案里，"
+    "漏了就是回答不完整。宁可多列，不可漏列。\n"
+    "14. 用户问「截止时间/报名截止」时，若检索片段给出了该事项的阶段时间范围（如「学院初赛 6月10日—6月24日」），"
+    "就把范围最后一天作为截止时间明确回答（如「报名截止即学院初赛截止，6月24日」），并补充「各学院可另行通知」。"
+    "不得因片段没写「报名截止」四个字就回答「未明确/无统一截止时间」。"
+    "此规则针对基于片段阶段时间给出截止日，不违反规则 12（规则 12 禁止的是用 calculate 推算或编造原文没有的数字）。\n"
+    "15. **重要**：查询具体人名/专有名词（如「张尊舒」）时，第一步直接以该名词本身作为检索词"
+    "（如检索「张尊舒」），不要拼接「学院/专业/学生/获奖」等修饰词——修饰词是高频词，"
+    "会把目标文档挤出检索结果。若拼接修饰词检索没拿到答案，回退用裸词再检一次。\n"
     "\n"
     "## 隐私保护规则（重要）\n"
     "- 用户若询问**某位具体老师/员工的个人手机号、邮箱或私人住址**，一律不提供。\n"
@@ -333,6 +351,102 @@ def _extract_year(query: str) -> str | None:
     return m.group(0) if m else None
 
 
+def _ms(a, b) -> str:
+    """毫秒差格式化；任一为 None 返回 '-'（该阶段未执行，检索埋点用）。"""
+    if a is None or b is None:
+        return "-"
+    return f"{int((b - a) * 1000)}"
+
+
+# ═══════════════════════════════════════════════════════
+# 罕见词精确召回（表格块/密集名单里人名的兜底）
+# ═══════════════════════════════════════════════════════
+#
+# 背景：人物姓名常出现在「获奖名单表格块」里（一块挤 20 个名字+奖项，如 4项一等奖
+# 文章的 Simuro 获奖行），向量嵌入被整块名字稀释 → 搜不到；BM25 靠 jieba 分词，
+# 人名放进句子（「张尊舒是谁」）时 jieba 切法不稳定 → 精确匹配也失效。
+# 兜底：从查询提取中文 2/3 字片段，用 Chroma $contains 对原文精确子串匹配，
+# 只注入「罕见词」（命中块 ≤ 阈值）的匹配；高频词（学生/比赛/介绍 等）跳过防噪声。
+
+_EXACT_RECALL_MAX_MATCH = 20   # 命中块数 ≤ 此值才视为罕见词注入；高频词命中成百上千块跳过
+_EXACT_RECALL_MAX_INJECT = 3    # 单次检索最多注入的兜底块数（防上下文膨胀）
+_EXACT_RECALL_MAX_SCAN = 10     # 单次检索最多 $contains 扫描次数（含被跳过的高频词），限时防长查询拖慢
+
+
+def _is_cjk(ch: str) -> bool:
+    """是否 CJK 汉字（用于判断片段是否独立成词：两侧非汉字才算独立）。"""
+    return "一" <= ch <= "鿿"
+
+
+def _is_standalone(text: str, gram: str) -> bool:
+    """gram 在 text 中是否至少一次独立成词（两侧为空白/标点/顿号/边界，而非嵌在更长的词里）。
+
+    区分「真实体」（获奖名单里的名字：余世民、刘京涛、张尊舒）与「词边界碎片」
+    （如「深入贯彻」里恰好出现的 2 字子串「下人」）——后者不是实体，注入会引入噪声。
+    """
+    i = text.find(gram)
+    while i != -1:
+        before_ok = i == 0 or not _is_cjk(text[i - 1])
+        after_ok = i + len(gram) >= len(text) or not _is_cjk(text[i + len(gram)])
+        if before_ok and after_ok:
+            return True
+        i = text.find(gram, i + 1)
+    return False
+
+
+def _extract_recall_grams(query: str) -> list[str]:
+    """从查询提取候选罕见词片段：中文 2/3 字 n-gram，去重后按长度降序。
+
+    不做「短片段被长片段包含就丢弃」：人名常是 2 字（如「李娜」），若因被
+    3 字片段（如下李娜）包含而丢弃就漏检了。噪声交给调用方的命中数阈值过滤。
+    """
+    runs = re.findall(r"[一-鿿]+", query)  # 连续中文字符串（数字/英文/空格自然分隔）
+    grams: set[str] = set()
+    for seg in runs:
+        for n in (3, 2):
+            for i in range(len(seg) - n + 1):
+                grams.add(seg[i:i + n])
+    return sorted(grams, key=lambda g: (-len(g), g))
+
+
+def _rare_token_exact_recall(query: str, merged: list[dict], vs) -> list[dict]:
+    """对主检索漏掉的人名/专有名词做 $contains 精确召回，注入 merged（就地追加并返回）。
+
+    仅注入主结果未覆盖的罕见词匹配；主结果已含该词 → 跳过（检索已成功，不占扫描预算）。
+    """
+    injected = 0
+    scans = 0
+    for gram in _extract_recall_grams(query):
+        if any(gram in d.get("text", "") for d in merged):
+            continue  # 主结果已含该词，无需兜底
+        scans += 1
+        if scans > _EXACT_RECALL_MAX_SCAN:
+            break
+        try:
+            hits = vs.collection.get(
+                where_document={"$contains": gram},
+                limit=_EXACT_RECALL_MAX_MATCH + 1,
+            )
+        except Exception as e:
+            logger.error("精确召回失败 gram=%r: %s", gram, e)
+            continue
+        docs, metas = hits.get("documents", []), hits.get("metadatas", [])
+        if len(docs) > _EXACT_RECALL_MAX_MATCH:
+            continue  # 高频词，跳过防噪声
+        present = {d.get("text", "") for d in merged}
+        for text, meta in zip(docs, metas):
+            if text in present:
+                continue
+            if not _is_standalone(text, gram):
+                continue  # 词边界碎片（如「深入」里的「下人」），非实体，跳过防噪声
+            merged.append({"text": text, "metadata": meta, "distance": 0.1})
+            present.add(text)
+            injected += 1
+            if injected >= _EXACT_RECALL_MAX_INJECT:
+                return merged
+    return merged
+
+
 def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
     """混合检索：库外校验 → 年份过滤 → 向量+BM25 融合召回 → 去重 → 补块 → 可选重排。
 
@@ -350,10 +464,13 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
     - RETRIEVAL_RERANK=on/off（默认 off）
     BM25 依赖缺失或建索引失败 → 自动回退纯向量，不崩。
     """
+    t0 = time.perf_counter()  # 检索耗时埋点起点
     refuse = _refuse_out_of_kb_school(query)
     if refuse:
+        logger.info("检索拒绝（库外主体）: %r", query)
         return refuse
     vs = _get_vector_store()
+    t_vec = t_bm25 = t_mix = t_rr = t_ctx = None  # 各检索阶段时间戳（埋点；None = 该阶段未执行）
 
     # 1. 年份过滤（检索时过滤，不是返回后再滤）
     # 放宽为 ±1 年窗口：query 里的年份常是「内容年份」（2026年挑战杯/2024年度评选），
@@ -369,6 +486,7 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
     # 2. 召回：纯向量 / 混合（向量 + BM25 两路 RRF 融合）
     try:
         vector_results = vs.search_similar(query, n_results=top_k, where=where)
+        t_vec = time.perf_counter()
     except Exception as e:
         logger.error("检索失败: %s", e)
         return f"检索失败: {e}"
@@ -379,7 +497,9 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
         if bm25 is not None:
             try:
                 bm25_results = bm25.search(query, top_n=top_k, year=year)
+                t_bm25 = time.perf_counter()
                 results = rrf_fuse(vector_results, bm25_results, top_n=top_k)
+                t_mix = time.perf_counter()
             except Exception as e:
                 logger.error("混合融合失败，回退纯向量: %s", e)
                 results = vector_results
@@ -390,12 +510,15 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
         logger.info("年份过滤(%s)无结果，回退不过滤重试", year)
         try:
             vector_results = vs.search_similar(query, n_results=top_k)
+            t_vec = time.perf_counter()
             results = vector_results
             if RETRIEVAL_MODE == "hybrid":
                 bm25 = get_bm25_retriever(vs.collection)
                 if bm25 is not None:
                     bm25_results = bm25.search(query, top_n=top_k, year=None)
+                    t_bm25 = time.perf_counter()
                     results = rrf_fuse(vector_results, bm25_results, top_n=top_k)
+                    t_mix = time.perf_counter()
         except Exception as e:
             logger.error("年份回退检索失败: %s", e)
     if not results:
@@ -410,6 +533,10 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
             continue
         seen.add(text)
         merged.append(doc)
+
+    # 3b. 罕见词精确召回兜底：向量+BM25 都漏掉的人名/专有名词，$contains 原文精确匹配强制召回。
+    #     放在补块之前，让补块能一并带出该来源的上下文块（如获奖名单所在文章的正文）。
+    merged = _rare_token_exact_recall(query, merged, vs)
 
     # 4. 同文档补块：对初始命中的每个来源，按 source 元数据拉取该文档全部块，
     #    追加未召回的后续块（关键句常埋在文档中后段，如 排查通知的 3月3-15日 和 台账 分别落在第二、三块）。
@@ -433,13 +560,16 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
         added = 0
         extra_texts = extra.get("documents", [])
         extra_metas = extra.get("metadatas", [])
-        # 该来源可补块的顺序：前 3 块 + 末块。
+        # 该来源可补块的顺序：前 3 块 + 中段 1 块 + 末块。
         # 末块常含落款/署名/日期/联系电话（如通知文末的发布日期），只补前 3 块会漏掉（eval Q10 败因）。
+        # 中段块常埋关键句（如心理健康通知的「3月20日前台账钉钉」落在第 4 块），仅前3+末块会跳过它（eval Q5 败因）。
         fill_order = list(range(min(3, len(extra_texts))))
         if len(extra_texts) > 3:
             fill_order.append(len(extra_texts) - 1)
+            if len(extra_texts) >= 6:  # 6 块以上才有真正的中段块（mid≥3，不与前3重叠）
+                fill_order.insert(-1, len(extra_texts) // 2)  # 中段块插在末块之前
         for fi in fill_order:
-            if len(merged) >= cap or added >= 3:
+            if len(merged) >= cap or added >= 4:
                 break
             text = extra_texts[fi]
             if text.startswith("【来源】") or text in seen:
@@ -448,12 +578,14 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
             # 补块本身没算过与 query 的相似度，沿用所属来源的最高相似度展示，避免误导为 100%
             merged.append({"text": text, "metadata": extra_metas[fi], "distance": 1.0 - src_best_sim.get(src, 0.5)})
             added += 1
+    t_ctx = time.perf_counter()  # 去重 + 同文档补块完成
 
     # 5. 可选重排：对补块后的候选用 CrossEncoder 精排再截断（默认关，省加载模型）。
     #    重排后 merged 长度 ≤ RERANK_TOP_N，天然被下方 `merged[:cap]` 截断兜底。
     if RETRIEVAL_RERANK == "on":
         try:
             merged = get_reranker().rerank(query, merged, top_n=RERANK_TOP_N)
+            t_rr = time.perf_counter()
         except Exception as e:
             logger.error("重排失败，保留原顺序: %s", e)
 
@@ -486,6 +618,17 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
             f"   原文链接: {source_url}\n"
             f"   片段: {text}..."
         )
+
+    # ── 检索明细日志（配合 request_id 排查：各段耗时 + 命中块数）──
+    t_total = time.perf_counter()
+    ctx_start = t_mix if t_mix is not None else t_vec  # 补块段起点：hybrid 从融合后计，纯向量从召回后计
+    logger.info(
+        "检索明细 query=%r mode=%s 向量=%sms BM25=%sms 融合=%sms 补块=%sms 重排=%sms 总=%dms 命中=%d块",
+        query[:60], RETRIEVAL_MODE,
+        _ms(t0, t_vec), _ms(t_vec, t_bm25), _ms(t_bm25, t_mix),
+        _ms(ctx_start, t_ctx), _ms(t_ctx, t_rr),
+        int((t_total - t0) * 1000), len(merged[:cap]),
+    )
     return "\n\n".join(lines)
 
 
@@ -638,47 +781,86 @@ def _parse_sources(result_text: str) -> list[dict]:
 # LLM 调用（Anthropic-compatible，支持 Tool Use）
 # ═══════════════════════════════════════════════════════
 
-async def _call_llm(messages: list[dict], api_key: str) -> dict:
-    """调用 Anthropic-compatible API，返回 {text, tool_uses, stop_reason}"""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL_NAME,
-        "max_tokens": MAX_TOKENS,
-        "temperature": TEMPERATURE,
-        "system": SYSTEM_PROMPT,
-        "messages": messages,
-        "tools": TOOL_DEFINITIONS,
-        # 禁用思考模式：deepseek 默认返回 thinking 块，工具调用后回传 assistant
-        # 必须原样带 thinking+signature，否则报 400。RAG 查询场景无需思考链，直接禁用
-        "thinking": {"type": "disabled"},
-    }
+async def _call_llm(messages: list[dict], api_key: str, on_delta=None) -> dict:
+    """调用 Anthropic-compatible API，返回 {text, tool_uses, stop_reason}。
 
-    async with aiohttp.ClientSession() as session:
+    on_delta 传入时启用流式（payload 加 stream: True）：每个 text_delta 实时回调一次，
+    供 SSE 边生成边出字；不传则一次性等全量响应（同旧行为）。
+
+    重试策略：网络错误 / HTTP 5xx / 请求阶段超时 在发起后重试（最多 LLM_MAX_RETRIES 次）。
+    流式中途断开不重试（可能已向客户端吐出部分文本，重发会造成重复），
+    由调用方（run_stream）回退到非流式整段输出。
+    """
+    last_error = ""
+    for attempt in range(1, LLM_MAX_RETRIES + 1):
+        if attempt > 1:
+            logger.warning("LLM 调用重试第 %d/%d 次（前次: %s）", attempt, LLM_MAX_RETRIES, last_error)
+            # 重试前退避一下，避免连续抖动时立刻再次失败
+            await asyncio.sleep(min(1.5 * (attempt - 1), 3.0))
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": MODEL_NAME,
+            "max_tokens": MAX_TOKENS,
+            "temperature": TEMPERATURE,
+            "system": SYSTEM_PROMPT,
+            "messages": messages,
+            "tools": TOOL_DEFINITIONS,
+            # 禁用思考模式：deepseek 默认返回 thinking 块，工具调用后回传 assistant
+            # 必须原样带 thinking+signature，否则报 400。RAG 查询场景无需思考链，直接禁用
+            "thinking": {"type": "disabled"},
+        }
+        if on_delta is not None:
+            payload["stream"] = True
+
+        in_body = False     # 是否已进入响应体读取（流式中断需区分，避免重复输出）
         try:
-            async with session.post(
-                API_URL, headers=headers, json=payload,
-                # 显式超时：deepseek 单轮生成最长约 120s，超时返回友好提示而非挂死
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error("LLM API 错误 (%d): %s", resp.status, error_text[:200])
-                    return {
-                        "text": f"API 调用失败 ({resp.status})",
-                        "tool_uses": [],
-                        "stop_reason": "end_turn",
-                    }
-                data = await resp.json()
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    API_URL, headers=headers, json=payload,
+                    # 显式超时：deepseek 单轮生成最长约 120s，超时返回友好提示而非挂死
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logger.error("LLM API 错误 (%d): %s", resp.status, error_text[:200])
+                        last_error = f"HTTP {resp.status}"
+                        if resp.status < 500:
+                            # 4xx 是请求本身的问题，重试无意义，直接失败
+                            return {
+                                "text": f"API 调用失败 ({resp.status})",
+                                "tool_uses": [],
+                                "stop_reason": "end_turn",
+                            }
+                        continue  # 5xx 服务端抖动，重试
+                    in_body = True
+                    if on_delta is not None:
+                        return await _parse_anthropic_stream(resp, on_delta)
+                    data = await resp.json()
+                    break
         except asyncio.TimeoutError:
+            if in_body and on_delta is not None:
+                raise  # 流式中途超时：已向客户端吐出部分文本，交给上层回退非流式
             logger.error("LLM API 调用超时 (>120s)")
-            return {
-                "text": "API 调用超时，请稍后重试。",
-                "tool_uses": [],
-                "stop_reason": "end_turn",
-            }
+            last_error = "timeout"
+            continue
+        except aiohttp.ClientError as e:
+            if in_body and on_delta is not None:
+                raise  # 流式连接断开：同上，交给上层回退
+            logger.error("LLM 网络错误: %s", e)
+            last_error = f"network: {type(e).__name__}"
+            continue
+
+    if 'data' not in locals():
+        # 重试全部耗尽，返回友好提示
+        return {
+            "text": "API 调用暂时失败，请稍后重试。",
+            "tool_uses": [],
+            "stop_reason": "end_turn",
+        }
 
     content_blocks = data.get("content", [])
     text_parts = []
@@ -697,6 +879,88 @@ async def _call_llm(messages: list[dict], api_key: str) -> dict:
         "text": "\n".join(text_parts),
         "tool_uses": tool_uses,
         "stop_reason": data.get("stop_reason", "end_turn"),
+    }
+
+
+async def _parse_anthropic_stream(resp, on_delta) -> dict:
+    """解析 Anthropic 兼容的 SSE 流，重建 {text, tool_uses, stop_reason}。
+
+    事件：
+    - content_block_start：标记 text / tool_use 块（tool_use 带 id/name）
+    - content_block_delta：text_delta → 实时回调 + 累积；input_json_delta → 累积重建工具入参
+    - message_delta：取 stop_reason
+    - message_stop：流结束
+
+    流中没有任何有效内容块（如服务端返回非 SSE 错误体）时抛 RuntimeError，
+    由调用方回退到非流式重发，保证不静默丢答案。
+    """
+    text_parts: list[str] = []
+    tool_blocks: dict[int, dict] = {}
+    stop_reason = "end_turn"
+    saw_content = False
+
+    while True:
+        raw_line = await resp.content.readline()
+        if not raw_line:
+            break
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data: "):
+            continue
+        data_str = line[6:].strip()
+        if not data_str or data_str == "[DONE]":
+            continue
+        try:
+            evt = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+        etype = evt.get("type")
+        if etype == "content_block_start":
+            saw_content = True
+            block = evt.get("content_block", {})
+            if block.get("type") == "tool_use":
+                tool_blocks[evt.get("index", len(tool_blocks))] = {
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "partial_json": "",
+                }
+        elif etype == "content_block_delta":
+            delta = evt.get("delta", {})
+            dtype = delta.get("type")
+            if dtype == "text_delta":
+                text = delta.get("text", "")
+                if text:
+                    on_delta(text)
+                    text_parts.append(text)
+            elif dtype == "input_json_delta":
+                block = tool_blocks.get(evt.get("index"))
+                if block:
+                    block["partial_json"] += delta.get("partial_json", "")
+        elif etype == "message_delta":
+            sr = (evt.get("delta") or {}).get("stop_reason")
+            if sr:
+                stop_reason = sr
+
+    if not saw_content:
+        raise RuntimeError("流式响应无有效内容块")
+
+    tool_uses = []
+    for idx in sorted(tool_blocks):
+        blk = tool_blocks[idx]
+        inp = {}
+        if blk["partial_json"]:
+            try:
+                inp = json.loads(blk["partial_json"])
+            except json.JSONDecodeError:
+                logger.warning("工具入参 JSON 解析失败: %s", blk["partial_json"][:200])
+        tool_uses.append({"id": blk["id"], "name": blk["name"], "input": inp})
+
+    if tool_uses:
+        logger.info("LLM → %d 个工具: %s", len(tool_uses), [t["name"] for t in tool_uses])
+
+    return {
+        "text": "\n".join(text_parts),
+        "tool_uses": tool_uses,
+        "stop_reason": stop_reason,
     }
 
 
@@ -777,7 +1041,7 @@ class AgentLoop:
         final_text = ""
         async for event in self.run_stream(message, history):
             if isinstance(event, TextEvent):
-                final_text = event.content
+                final_text += event.content  # TextEvent 现为逐 chunk，需累加成完整答案
         return final_text
 
     async def run_stream(
@@ -815,14 +1079,14 @@ class AgentLoop:
                 return "".join(parts)
             return str(content) if content else ""
 
-        # ── 构建消息列表 ──
+        # ── 构建消息列表（先截断 history 防上下文超长）──
         messages: list[dict] = []
-        for msg in (history or []):
+        for msg in (history or [])[-MAX_HISTORY_TURNS:]:
             role = msg.get("role", "user")
             content = _normalize_content(msg.get("content", ""))
             if not content or content.startswith("⏳"):
                 continue
-            messages.append({"role": role, "content": content})
+            messages.append({"role": role, "content": content[:MAX_HISTORY_CHARS]})
         messages.append({"role": "user", "content": message})
 
         # ── 初次事件：用户消息已接收 ──
@@ -833,7 +1097,37 @@ class AgentLoop:
         for rnd in range(self.max_rounds):
             yield ThinkingEvent(step=add_step(f"第 {rnd + 1} 轮推理 — 调用 LLM..."))
 
-            response = await _call_llm(messages, self.api_key)
+            # ── 流式调用 LLM：边生成边 yield TextEvent，同时拿到完整 response ──
+            # on_delta 把每个 text 增量塞进队列，本协程并发排空队列实时转发；
+            # 流式解析失败时回退非流式重发（stream_error 置位），答案交给回退路径整段输出。
+            chunk_queue: asyncio.Queue = asyncio.Queue()
+            stream_error = [False]
+            streamed_chunks = 0
+
+            async def _llm_with_stream() -> dict:
+                try:
+                    return await _call_llm(messages, self.api_key, on_delta=chunk_queue.put_nowait)
+                except Exception:
+                    stream_error[0] = True
+                    logger.exception("流式调用失败，回退非流式")
+                    return await _call_llm(messages, self.api_key)
+                finally:
+                    await chunk_queue.put(None)  # 哨兵：排空循环结束
+
+            llm_task = asyncio.create_task(_llm_with_stream())
+            try:
+                while True:
+                    chunk = await chunk_queue.get()
+                    if chunk is None:
+                        break
+                    if stream_error[0]:
+                        continue  # 流式已失败：丢弃残留缓冲，不输出残缺片段
+                    streamed_chunks += 1
+                    yield TextEvent(content=chunk)
+                response = await llm_task
+            finally:
+                if not llm_task.done():
+                    llm_task.cancel()
 
             if response.get("tool_uses"):
                 for tu in response["tool_uses"]:
@@ -843,7 +1137,9 @@ class AgentLoop:
 
                     yield ToolCallEvent(tool=name, args=inp)
 
-                    result_text = execute_tool(name, inp)
+                    # 同步阻塞的工具执行（ChromaDB 查询 / BM25 打分 / weather 请求）
+                    # 丢线程池执行，避免卡住事件循环（多人并发问答互不阻塞）
+                    result_text = await asyncio.to_thread(execute_tool, name, inp)
 
                     if name == "search_knowledge_base":
                         ev_sources = _parse_sources(result_text)
@@ -872,7 +1168,10 @@ class AgentLoop:
                 answer = response.get("text", "")
                 elapsed = time.time() - start_time
                 add_step(f"✅ 生成完成 | {rnd + 1} 轮 | 耗时 {elapsed:.1f}s")
-                yield TextEvent(content=answer)
+                # 已流式输出的（有增量且无失败）不必重复发整段；
+                # 未流式/流式失败场景在此整段补发，保证答案完整。
+                if stream_error[0] or streamed_chunks == 0:
+                    yield TextEvent(content=answer)
                 yield DoneEvent(thinking=list(thinking_steps), sources=list(sources))
                 return
 

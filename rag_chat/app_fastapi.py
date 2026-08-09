@@ -6,20 +6,24 @@ app_fastapi.py — FastAPI SSE 后端
 """
 
 import asyncio
+import contextvars
+import hashlib
 import json
 import logging
 import os
 import sys
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, UploadFile, File, Header
+from fastapi import FastAPI, Request, UploadFile, File, Header, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 # ── 路径 ──
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -42,18 +46,52 @@ except Exception:
 load_dotenv()
 
 logger = logging.getLogger("fastapi_agent")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+# ── request_id 贯穿：contextvar 存当前请求 ID，Filter 注入所有日志 record ──
+# 子模块（app_backend / src.* 等）的 logger 默认传播到 root，加一次 Filter 全局生效，
+# 排查问题时能按 request_id 串起「入口 → 检索 → LLM → 答案」整条链路。
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+
+
+class _RequestIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_var.get()
+        return True
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] [%(request_id)s] %(levelname)s: %(message)s",
+)
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_RequestIdFilter())
 
 # ═══════════════════════════════════════════════════════
 # FastAPI App
 # ═══════════════════════════════════════════════════════
 
-app = FastAPI(title="校园百事通 API", version="2.0")
+# ── 启动预热：提前加载 embedding 模型，消掉首问的 ~20s 冷启动 ──
+# 首问慢的元凶是 embedding 模型懒加载（paraphrase-multilingual-MiniLM-L12-v2），
+# 首次检索时才在 Chroma 里初始化。服务启动时先在线程池建一次 VectorStore，
+# 把模型加载挪到启动阶段，用户第一问就不用干等。
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    try:
+        await asyncio.to_thread(_get_vector_store)
+        logger.info("✅ embedding 模型预热完成（首问提速）")
+    except Exception:
+        logger.warning("embedding 预热失败，首问可能仍较慢", exc_info=True)
+    yield
+
+
+app = FastAPI(title="校园百事通 API", version="2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # 鉴权走 X-API-Key header，不需要 credentials 模式；
+    # "*" + allow_credentials=True 是非法组合，改 False 避免跨站带 cookie 风险
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -65,10 +103,103 @@ _STATIC_DIR = _PROJECT_ROOT / "static"
 # Pydantic Models
 # ═══════════════════════════════════════════════════════
 
+# 输入上限：单条消息最长字符数（超长直接 422，防撑爆 DeepSeek 上下文）
+MAX_MESSAGE_CHARS = 8000
+# 上传白名单扩展名 + 大小上限（20MB）
+_ALLOWED_UPLOAD_EXT = {".txt", ".md", ".pdf", ".docx"}
+MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+# 查询级缓存：相同问题直接复用上次答案，省 DeepSeek 调用 + 检索。.env 可配 off / TTL
+QUERY_CACHE = os.getenv("QUERY_CACHE", "on").strip().lower() == "on"
+QUERY_CACHE_TTL = int(os.getenv("QUERY_CACHE_TTL", "3600"))
+_CACHE_PREFIX = "rag:answer:v2:"
+
+
 class ChatRequest(BaseModel):
     user_id: str
     message: str
     history: Optional[list[dict]] = None
+
+    @field_validator("message")
+    @classmethod
+    def _check_message_length(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("消息不能为空")
+        if len(v) > MAX_MESSAGE_CHARS:
+            raise ValueError(f"消息过长（上限 {MAX_MESSAGE_CHARS} 字符）")
+        return v
+
+
+def _verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")) -> str:
+    """服务端鉴权：受保护接口的 X-API-Key 必须等于 .env 的 API_KEY。
+
+    朋友试用填的就是这把 key；防止 ngrok 暴露时被白嫖服务端 DeepSeek key。
+    / 与 /health 保持公开（探活用）。
+    """
+    expected = os.getenv("API_KEY", "")
+    if not expected:
+        logger.warning("API_KEY 未配置，拒绝所有受保护接口")
+        raise HTTPException(status_code=500, detail="服务端未配置 API Key")
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="无效的 API Key")
+    return x_api_key
+
+
+# ── 查询级缓存辅助 ──
+
+def _cache_key(message: str) -> str:
+    """规范化消息 → 缓存 key。忽略 history（校园问答问题独立，命中率优先）。"""
+    norm = " ".join(message.split())
+    digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
+    return f"{_CACHE_PREFIX}{digest}"
+
+
+async def _cache_get(key: str) -> dict | None:
+    """读缓存；Redis 不可用或异常 → 返回 None（降级为直接检索）。"""
+    if not _REDIS_AVAILABLE:
+        return None
+    try:
+        redis = await get_redis_client()
+        raw = await redis.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:
+        logger.warning("缓存读取失败，跳过缓存: %s", key)
+        return None
+
+
+async def _cache_set(key: str, answer: str, sources: list, thinking: list) -> None:
+    """写缓存；失败静默（不影响对话主流程）。"""
+    if not _REDIS_AVAILABLE:
+        return
+    try:
+        redis = await get_redis_client()
+        await redis.setex(key, QUERY_CACHE_TTL, json.dumps(
+            {"answer": answer, "sources": sources, "thinking": thinking},
+            ensure_ascii=False,
+        ))
+    except Exception:
+        pass
+
+
+async def _flush_query_cache() -> int:
+    """知识库内容变化后清空查询缓存（旧答案可能已过时）。
+
+    上传新文档 / 爬虫入库成功后调用；扫描 `rag:answer:v2:*` 前缀逐一删除。
+    返回删除的 key 数；Redis 不可用或异常 → 0（降级，不影响主流程）。
+    """
+    if not _REDIS_AVAILABLE:
+        return 0
+    try:
+        redis = await get_redis_client()
+        deleted = 0
+        async for key in redis.scan_iter(match=f"{_CACHE_PREFIX}*", count=100):
+            await redis.delete(key)
+            deleted += 1
+        if deleted:
+            logger.info("知识库已更新，清空查询缓存 %d 个 key", deleted)
+        return deleted
+    except Exception:
+        logger.warning("清空查询缓存失败，跳过", exc_info=True)
+        return 0
 
 
 # ═══════════════════════════════════════════════════════
@@ -85,6 +216,27 @@ async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id
     agent = AgentLoop(api_key=api_key)
     last_answer = ""
 
+    # ── 查询级缓存：相同问题直接回放，省 LLM 调用 + 检索 ──
+    if QUERY_CACHE:
+        cache_key = _cache_key(message)
+        cached = await _cache_get(cache_key)
+        if cached:
+            answer = cached.get("answer", "")
+            cached_sources = cached.get("sources") or []
+            cached_thinking = cached.get("thinking") or []
+            logger.info("缓存命中 key=%s 答案%d字 来源%d条", cache_key, len(answer), len(cached_sources))
+            if cached_sources:
+                yield {"type": "sources", "docs": cached_sources}
+            yield {"type": "thinking", "step": "⚡ 命中缓存（重复问题，直接复用上次回答）"}
+            # 分块回放，保留流式体验
+            for i in range(0, len(answer), 30):
+                yield {"type": "text", "content": answer[i:i + 30]}
+            yield {"type": "done", "thinking": cached_thinking, "sources": cached_sources}
+            # 命中也是一次真实提问，照常持久化到历史与日志
+            await _save_to_redis(user_id, message, answer)
+            _log_to_txt(user_id, message, answer)
+            return
+
     try:
         async for event in agent.run_stream(message, history):
             if isinstance(event, ThinkingEvent):
@@ -100,23 +252,23 @@ async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id
                     step = f"📋 返回: {event.output[:120]}"
                 yield {"type": "thinking", "step": step}
             elif isinstance(event, TextEvent):
-                last_answer = event.content
-                # 分块输出答案（模拟流式）
-                chunk_size = 30
-                for i in range(0, len(event.content), chunk_size):
-                    chunk = event.content[i:i + chunk_size]
-                    yield {"type": "text", "content": chunk}
-                    await asyncio.sleep(0.015)
+                # 真流式：后端已按 LLM 输出增量逐个发 TextEvent，这里直接转发
+                last_answer += event.content
+                yield {"type": "text", "content": event.content}
             elif isinstance(event, DoneEvent):
                 yield {"type": "done", "thinking": event.thinking, "sources": event.sources}
                 # ── 持久化：Redis + TXT ──
                 await _save_to_redis(user_id, message, last_answer)
                 _log_to_txt(user_id, message, last_answer)
+                # ── 查询级缓存：写回完整答案 + 来源 + 思考过程 ──
+                if QUERY_CACHE:
+                    await _cache_set(_cache_key(message), last_answer, event.sources or [], event.thinking or [])
             elif isinstance(event, ErrorEvent):
                 yield {"type": "error", "message": event.message}
-    except Exception as e:
+    except Exception:
         logger.exception("Agent SSE 异常")
-        yield {"type": "error", "message": str(e)}
+        # 不把内部异常原文透传给客户端（可能泄露路径/堆栈），统一友好文案
+        yield {"type": "error", "message": "服务内部异常，请稍后重试。"}
 
 
 # ── Redis 辅助 ──
@@ -206,11 +358,9 @@ async def health():
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest, x_api_key: str = Header(None, alias="X-API-Key")):
+async def chat(req: ChatRequest, api_key: str = Depends(_verify_api_key)):
     """SSE 流式对话（支持多轮记忆：前端 history + Redis 服务端持久化）"""
-    api_key = x_api_key or ""
-    if not api_key:
-        api_key = os.getenv("API_KEY", "")
+    _request_id_var.set(uuid.uuid4().hex[:12])  # request_id：贯穿本次请求全链路日志
 
     # ── 合并历史：Redis 服务端历史 + 前端会话历史 ──
     redis_history = await _load_redis_history(req.user_id)
@@ -241,43 +391,62 @@ async def chat(req: ChatRequest, x_api_key: str = Header(None, alias="X-API-Key"
 
 
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    """文档上传入库"""
+async def upload(file: UploadFile = File(...), _: str = Depends(_verify_api_key)):
+    """文档上传入库（受保护：需服务端 API Key）"""
     try:
+        # 扩展名白名单 + 防路径穿越（只取文件名部分，忽略目录前缀）
+        filename = Path(file.filename or "").name
+        ext = Path(filename).suffix.lower()
+        if not filename or ext not in _ALLOWED_UPLOAD_EXT:
+            return JSONResponse(
+                {"detail": f"不支持的文件类型「{ext or '未知'}」，仅支持 .txt/.md/.pdf/.docx"},
+                status_code=400,
+            )
+
+        content = await file.read()
+        if len(content) == 0:
+            return JSONResponse({"detail": "文件内容为空"}, status_code=400)
+        if len(content) > MAX_UPLOAD_SIZE:
+            return JSONResponse(
+                {"detail": f"文件过大（上限 {MAX_UPLOAD_SIZE // (1024 * 1024)}MB）"},
+                status_code=413,
+            )
+
         # 保存临时文件
         tmp_dir = _PROJECT_ROOT / "scraped_docs" / "_uploads"
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = tmp_dir / file.filename
-        content = await file.read()
+        tmp_path = tmp_dir / filename
         tmp_path.write_bytes(content)
 
         # 调用入库逻辑
         result = await ingest_files([str(tmp_path)])
-        ok = result.get("files_processed", 0)
         errs = result.get("errors", [])
         chunks = result.get("total_chunks", 0)
 
+        # 知识库已变化（部分成功也变了），旧查询缓存可能过时，清空
+        await _flush_query_cache()
+
         if errs:
             return JSONResponse({
-                "filename": file.filename,
+                "filename": filename,
                 "chunks": chunks,
                 "status": "partial",
                 "errors": errs,
             }, status_code=207)
 
         return {
-            "filename": file.filename,
+            "filename": filename,
             "chunks": chunks,
             "status": "ok",
         }
-    except Exception as e:
+    except Exception:
         logger.exception("上传失败")
-        return JSONResponse({"detail": str(e)}, status_code=500)
+        return JSONResponse({"detail": "上传处理失败，请检查文件格式后重试"}, status_code=500)
 
 
 @app.post("/scrape")
-async def scrape(pages: int = 2):
-    """触发爬虫（后台运行，返回任务确认信息）"""
+async def scrape(pages: int = 2, _: str = Depends(_verify_api_key)):
+    """触发爬虫（后台运行，返回任务确认信息；受保护）"""
     return {
         "status": "confirmed",
         "message": (
@@ -291,21 +460,23 @@ async def scrape(pages: int = 2):
 
 
 @app.post("/scrape/start")
-async def scrape_start(pages: int = 2):
-    """实际执行爬虫（同步等待完成）"""
+async def scrape_start(pages: int = 2, _: str = Depends(_verify_api_key)):
+    """实际执行爬虫（同步等待完成；受保护）"""
     try:
         result = await run_scraper_pipeline(max_pages=pages)
+        # 爬虫入库后知识库已变化，旧查询缓存可能过时，清空
+        await _flush_query_cache()
         return {
             "status": "ok",
             "total_articles": result.get("total_articles", 0),
             "total_chunks": result.get("total_chunks", 0),
             "errors": result.get("errors", []),
         }
-    except Exception as e:
+    except Exception:
         logger.exception("爬虫失败")
         return JSONResponse({
             "status": "error",
-            "detail": str(e),
+            "detail": "爬虫执行失败，请查看服务端日志",
         }, status_code=500)
 
 
@@ -319,9 +490,9 @@ async def kb_stats():
             "total_chunks": stats.get("total_chunks", 0),
             "category_counts": stats.get("category_counts", {}),
         }
-    except Exception as e:
+    except Exception:
         logger.exception("KB 统计失败")
-        return JSONResponse({"detail": str(e)}, status_code=500)
+        return JSONResponse({"detail": "知识库统计失败，请稍后重试"}, status_code=500)
 
 
 # ═══════════════════════════════════════════════════════

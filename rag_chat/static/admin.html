@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库管理</title>
+<style>
+  :root {
+    --bg: #1a1a2e; --sidebar-bg: #0d1117; --card: #161b22;
+    --accent: #e94560; --text: #eee; --text-dim: #8b949e;
+    --user-bubble: #1f2937; --ai-bubble: #0d1117;
+    --input-bg: #161b22; --border: #30363d;
+    --success: #3fb950; --warn: #d2991d;
+    --hover: #1c2128;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ════ 顶栏 ════ */
+  .topbar {
+    background: var(--sidebar-bg); border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 10px;
+  }
+  .topbar h1 { font-size: 18px; color: var(--accent); }
+
+  .unlock-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: 13px;
+    padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--card);
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .unlock-bar.flash { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(233,69,96,.25); }
+  .unlock-view { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .status-dot.locked { background: #666; }
+  .status-dot.unlocked { background: var(--success); }
+  .status-text { color: var(--text-dim); }
+  .unlock-bar input[type="password"] {
+    padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px; outline: none;
+    width: 200px;
+  }
+  .unlock-bar input:focus { border-color: var(--accent); }
+  .unlock-bar a { color: var(--text-dim); cursor: pointer; font-size: 12px; text-decoration: none; }
+  .unlock-bar a:hover { color: var(--accent); }
+
+  button {
+    padding: 8px 18px; border-radius: 8px; border: none;
+    font-size: 13px; cursor: pointer; transition: opacity .2s, background .2s;
+  }
+  button:hover { opacity: .85; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-accent { background: var(--accent); color: #fff; }
+  .btn-ghost { background: var(--border); color: var(--text); }
+
+  /* ════ 主区域 ════ */
+  .admin-main { max-width: 860px; margin: 0 auto; padding: 20px 24px 40px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 16px;
+  }
+  .section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .section-header h2 { font-size: 15px; color: var(--text); }
+  .locked-hint { font-size: 11px; color: var(--warn); }
+
+  /* ════ 统计 ════ */
+  .stat-grid { display: flex; gap: 14px; margin-bottom: 14px; }
+  .stat-tile {
+    flex: 1; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; text-align: center;
+  }
+  .stat-num { font-size: 30px; font-weight: 700; color: var(--accent); }
+  .stat-label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .chip-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 12px; font-size: 12px; color: var(--text-dim);
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+
+  /* ════ 上传 ════ */
+  .upload-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .upload-controls input[type="file"] { color: var(--text-dim); font-size: 13px; }
+  .upload-controls input[type="file"]::file-selector-button {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer; margin-right: 10px;
+  }
+  .summary-line { font-size: 12px; color: var(--text-dim); margin-top: 12px; }
+  .file-list { list-style: none; margin-top: 12px; }
+  .file-list li {
+    padding: 8px 12px; border-radius: 8px; background: var(--bg);
+    border: 1px solid var(--border); margin-bottom: 6px;
+    font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .file-row.pending { color: var(--text-dim); }
+  .file-row.uploading { color: var(--warn); }
+  .file-row.ok { color: var(--success); }
+  .file-row.partial { color: var(--warn); }
+  .file-row.fail { color: var(--accent); }
+  .file-row .fname { color: var(--text); word-break: break-all; flex: 1; min-width: 150px; }
+  .file-row .ferrors { font-size: 11px; color: var(--text-dim); width: 100%; }
+
+  /* ════ 爬虫 ════ */
+  .scrape-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .scrape-controls label { font-size: 13px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+  .scrape-controls input[type="number"] {
+    padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px; width: 70px; outline: none;
+  }
+  .scrape-controls input:focus { border-color: var(--accent); }
+  .banner { margin-top: 12px; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+  .banner-info { background: #1a1a00; color: var(--warn); }
+  .banner-error { background: #3d0000; color: var(--accent); }
+  .banner-success { background: #003d1a; color: var(--success); }
+  .scrape-result { margin-top: 12px; font-size: 13px; }
+  .scrape-result .stat-line { margin-bottom: 4px; }
+  .scrape-result .err-list { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+
+  /* ════ 确认弹窗（复用 chat.html 样式） ════ */
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.65); z-index: 1000;
+    justify-content: center; align-items: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal-box {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; max-width: 420px; width: 90%;
+    animation: fadeIn .2s ease;
+  }
+  .modal-box h3 { color: var(--accent); margin-bottom: 12px; font-size: 16px; }
+  .modal-box p { font-size: 13px; color: var(--text-dim); line-height: 1.7; margin-bottom: 20px; }
+  .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; }
+  .modal-buttons button {
+    padding: 8px 18px; border-radius: 8px; border: none;
+    font-size: 13px; cursor: pointer; transition: opacity .2s;
+  }
+  .modal-buttons button:hover { opacity: .85; }
+  .modal-btn-cancel { background: var(--border); color: var(--text); }
+  .modal-btn-confirm { background: var(--accent); color: #fff; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+  .pulse { animation: pulse 1.4s infinite; }
+
+  /* ════ Toast ════ */
+  #toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--card); border: 1px solid var(--border);
+    padding: 10px 20px; border-radius: 8px; font-size: 13px; z-index: 2000;
+    opacity: 0; pointer-events: none; transition: opacity .25s;
+  }
+  #toast.show { opacity: 1; }
+  #toast.ok { border-color: var(--success); color: var(--success); }
+  #toast.err { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>📚 知识库管理</h1>
+  <div class="unlock-bar" id="unlockBar">
+    <div class="unlock-view" id="lockedView">
+      <span class="status-dot locked"></span>
+      <span class="status-text">未解锁</span>
+      <input type="password" id="unlockInput" placeholder="服务端 API_KEY" autocomplete="off">
+      <button class="btn-accent" id="unlockBtn">解锁</button>
+      <span class="status-text" style="font-size:11px">填 .env 里的 API_KEY</span>
+    </div>
+    <div class="unlock-view" id="unlockedView" hidden>
+      <span class="status-dot unlocked"></span>
+      <span class="status-text" id="unlockStatusText">已解锁</span>
+      <a id="reenterKey">重新输入</a>
+      <a id="forgetKey">清除</a>
+    </div>
+  </div>
+</header>
+
+<main class="admin-main">
+  <!-- 区块1：知识库概览（公开） -->
+  <section class="card" id="statsSection">
+    <div class="section-header">
+      <h2>知识库概览</h2>
+      <button class="btn-ghost" id="refreshStatsBtn">刷新</button>
+    </div>
+    <div class="banner banner-error" id="statsError" hidden></div>
+    <div class="stat-grid">
+      <div class="stat-tile"><div class="stat-num" id="statArticles">–</div><div class="stat-label">文章</div></div>
+      <div class="stat-tile"><div class="stat-num" id="statChunks">–</div><div class="stat-label">分块</div></div>
+    </div>
+    <div class="chip-grid" id="categoryChips"></div>
+  </section>
+
+  <!-- 区块2：上传文档（需解锁） -->
+  <section class="card" id="uploadSection">
+    <div class="section-header">
+      <h2>上传文档</h2>
+      <span class="locked-hint" id="uploadLockedHint" hidden>⚠ 请先在上方解锁</span>
+    </div>
+    <div class="upload-controls">
+      <input type="file" id="fileInput" multiple accept=".txt,.md,.pdf,.docx">
+      <button class="btn-accent" id="uploadBtn" disabled>上传</button>
+    </div>
+    <div class="summary-line" id="uploadSummary"></div>
+    <ul class="file-list" id="uploadList"></ul>
+  </section>
+
+  <!-- 区块3：爬虫更新（需解锁） -->
+  <section class="card" id="scrapeSection">
+    <div class="section-header">
+      <h2>爬虫更新</h2>
+      <span class="locked-hint" id="scrapeLockedHint" hidden>⚠ 请先在上方解锁</span>
+    </div>
+    <div class="scrape-controls">
+      <label>抓取页数
+        <input type="number" id="scrapePages" min="1" max="10" value="2">
+      </label>
+      <button class="btn-accent" id="scrapeBtn">开始抓取</button>
+    </div>
+    <div class="banner banner-info" id="scrapeStatus" hidden>⏳ 运行中…（每页约 3~8 分钟，请耐心等待，此窗口勿关闭）</div>
+    <div class="scrape-result" id="scrapeResult" hidden></div>
+  </section>
+</main>
+
+<!-- 爬虫确认弹窗 -->
+<div class="modal-overlay" id="scrapeConfirmModal">
+  <div class="modal-box">
+    <h3>确认开始抓取？</h3>
+    <p id="scrapeConfirmText">将从官网抓取 N 页，每页约 3~8 分钟。抓取期间请勿关闭本页面，等待期间可刷新上方知识库概览观察篇数增长。</p>
+    <div class="modal-buttons">
+      <button class="modal-btn-cancel" id="scrapeCancelBtn">取消</button>
+      <button class="modal-btn-confirm" id="scrapeConfirmBtn">✓ 开始</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════
+// 常量与状态
+// ═══════════════════════════════════════
+const API_BASE = window.location.protocol === 'file:' ? 'http://127.0.0.1:8000' : '';
+const KEY_STORAGE = 'rag_admin_api_key';
+const ALLOWED_EXT = ['.txt', '.md', '.pdf', '.docx'];
+const MAX_SIZE = 20 * 1024 * 1024;
+
+let currentKey = '';
+let globalBusy = false;
+let toastTimer = null;
+
+const $ = id => document.getElementById(id);
+
+// ═══════════════════════════════════════
+// 解锁
+// ═══════════════════════════════════════
+function maskKey(key) {
+  return key.length > 4 ? key.slice(0, 4) + '…' + key.slice(-4) : 'sk…';
+}
+
+function setUnlockedState(unlocked) {
+  $('lockedView').hidden = unlocked;
+  $('unlockedView').hidden = !unlocked;
+  if (unlocked) $('unlockStatusText').textContent = '已解锁 · ' + maskKey(currentKey);
+}
+
+function loadSavedKey() {
+  const saved = localStorage.getItem(KEY_STORAGE);
+  if (saved) {
+    currentKey = saved;
+    setUnlockedState(true);
+  }
+}
+
+function handleUnlock() {
+  const val = $('unlockInput').value.trim();
+  if (!val) { $('unlockInput').focus(); return; }
+  currentKey = val;
+  localStorage.setItem(KEY_STORAGE, val);
+  setUnlockedState(true);
+  $('unlockInput').value = '';
+  showToast('已解锁', 'ok');
+}
+
+function handleReenter() {
+  currentKey = '';
+  setUnlockedState(false);
+  $('unlockInput').focus();
+}
+
+function handleForget() {
+  currentKey = '';
+  localStorage.removeItem(KEY_STORAGE);
+  setUnlockedState(false);
+}
+
+function flashUnlock() {
+  const bar = $('unlockBar');
+  bar.classList.add('flash');
+  bar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  setTimeout(() => bar.classList.remove('flash'), 2500);
+}
+
+function requireUnlocked(sectionId) {
+  if (currentKey) return true;
+  flashUnlock();
+  const hint = sectionId === 'uploadSection' ? $('uploadLockedHint') : $('scrapeLockedHint');
+  hint.hidden = false;
+  setTimeout(() => { hint.hidden = true; }, 2500);
+  return false;
+}
+
+function handleApi401() {
+  currentKey = '';
+  setUnlockedState(false);
+  showToast('API Key 无效，请重新解锁', 'err');
+}
+
+function showToast(msg, type) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = type || '';
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ═══════════════════════════════════════
+// 知识库概览（公开接口）
+// ═══════════════════════════════════════
+async function fetchKbStats() {
+  $('statsError').hidden = true;
+  try {
+    const res = await fetch(API_BASE + '/kb-stats');
+    if (!res.ok) {
+      let detail = '加载失败';
+      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      renderStatsError(detail);
+      return;
+    }
+    renderStats(await res.json());
+  } catch (err) {
+    renderStatsError('无法连接服务，请确认 app_fastapi.py 已启动');
+  }
+}
+
+function renderStats(data) {
+  $('statArticles').textContent = data.total_articles ?? '–';
+  $('statChunks').textContent = data.total_chunks ?? '–';
+  const chips = $('categoryChips');
+  chips.textContent = '';
+  const counts = data.category_counts || {};
+  Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([cat, n]) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      const b = document.createElement('b');
+      b.textContent = n;
+      chip.append(cat + ' ', b, ' 篇');
+      chips.appendChild(chip);
+    });
+}
+
+function renderStatsError(msg) {
+  const e = $('statsError');
+  e.textContent = '⚠ ' + msg;
+  e.hidden = false;
+}
+
+// ═══════════════════════════════════════
+// 上传文档
+// ═══════════════════════════════════════
+function validateFile(file) {
+  const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+  if (!ALLOWED_EXT.includes(ext)) return { ok: false, reason: '仅支持 .txt/.md/.pdf/.docx' };
+  if (file.size === 0) return { ok: false, reason: '空文件' };
+  if (file.size > MAX_SIZE) return { ok: false, reason: '超过 20MB 上限' };
+  return { ok: true };
+}
+
+function handleFileSelect() {
+  const list = $('uploadList');
+  list.textContent = '';
+  $('uploadSummary').textContent = '';
+  const files = $('fileInput').files;
+  let validCount = 0;
+  Array.from(files).forEach(file => {
+    const li = document.createElement('li');
+    li.className = 'file-row pending';
+    const name = document.createElement('span');
+    name.className = 'fname';
+    name.textContent = file.name;
+    const st = document.createElement('span');
+    li.append(name, st);
+    li._file = file;
+    const v = validateFile(file);
+    if (v.ok) {
+      validCount++;
+      st.textContent = '待上传';
+    } else {
+      li.classList.add('fail');
+      st.textContent = '❌ ' + v.reason;
+    }
+    list.appendChild(li);
+  });
+  $('uploadBtn').disabled = validCount === 0;
+}
+
+function setUploadRow(row, state, text) {
+  row.className = 'file-row ' + state;
+  row.querySelector('span:last-child').textContent = text;
+}
+
+async function uploadOne(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch(API_BASE + '/upload', {
+    method: 'POST',
+    headers: { 'X-API-Key': currentKey },
+    body: formData,
+  });
+  if (res.status === 401) throw Object.assign(new Error('KEY_INVALID'), { code: 'KEY_INVALID' });
+  let body = {};
+  try { body = await res.json(); } catch (e) {}
+  if (res.status === 200) return { ok: true, chunks: body.chunks };
+  if (res.status === 207) return { partial: true, chunks: body.chunks, errors: body.errors || [] };
+  return { failed: body.detail || ('上传失败 (' + res.status + ')') };
+}
+
+async function startUpload() {
+  if (globalBusy) return;
+  if (!requireUnlocked('uploadSection')) return;
+  const rows = Array.from($('uploadList').children).filter(r => r._file && validateFile(r._file).ok);
+  if (!rows.length) { showToast('没有可上传的文件', 'err'); return; }
+
+  globalBusy = true;
+  const btn = $('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 上传中…';
+  let okCount = 0, partialCount = 0, failCount = 0;
+
+  for (const row of rows) {
+    setUploadRow(row, 'uploading', '上传中…');
+    try {
+      const result = await uploadOne(row._file);
+      if (result.ok) {
+        okCount++;
+        setUploadRow(row, 'ok', '✅ 入库 ' + result.chunks + ' 块');
+      } else if (result.partial) {
+        partialCount++;
+        setUploadRow(row, 'partial', '⚠️ 部分入库 ' + result.chunks + ' 块');
+        const ferr = document.createElement('div');
+        ferr.className = 'ferrors';
+        ferr.textContent = (result.errors || []).slice(0, 3).join('；');
+        row.appendChild(ferr);
+      } else {
+        failCount++;
+        setUploadRow(row, 'fail', '❌ ' + (result.failed || '失败'));
+      }
+    } catch (err) {
+      if (err.code === 'KEY_INVALID') {
+        failCount++;
+        setUploadRow(row, 'fail', '❌ API Key 无效');
+        Array.from($('uploadList').children).slice(rows.indexOf(row) + 1).forEach(r => {
+          setUploadRow(r, 'fail', '已跳过');
+        });
+        handleApi401();
+        break;
+      }
+      failCount++;
+      setUploadRow(row, 'fail', '❌ 无法连接服务');
+    }
+  }
+
+  $('uploadSummary').textContent =
+    `成功 ${okCount} · 部分 ${partialCount} · 失败 ${failCount}`;
+  $('fileInput').value = '';
+  $('uploadBtn').textContent = '上传';
+  $('uploadBtn').disabled = true;
+  globalBusy = false;
+  fetchKbStats();
+}
+
+// ═══════════════════════════════════════
+// 爬虫更新
+// ═══════════════════════════════════════
+function openScrapeConfirm() {
+  if (globalBusy) return;
+  if (!requireUnlocked('scrapeSection')) return;
+  let pages = parseInt($('scrapePages').value, 10);
+  if (!pages || pages < 1) pages = 1;
+  if (pages > 10) pages = 10;
+  $('scrapePages').value = pages;
+  $('scrapeConfirmText').textContent =
+    `将从官网抓取 ${pages} 页，每页约 3~8 分钟。抓取期间请勿关闭本页面，等待期间可刷新上方知识库概览观察篇数增长。`;
+  $('scrapeConfirmModal').classList.add('show');
+}
+
+function closeScrapeConfirm() {
+  $('scrapeConfirmModal').classList.remove('show');
+}
+
+async function scrapeNow(pages) {
+  const res = await fetch(API_BASE + '/scrape/start?pages=' + pages, {
+    method: 'POST',
+    headers: { 'X-API-Key': currentKey },
+  });
+  if (res.status === 401) throw Object.assign(new Error('KEY_INVALID'), { code: 'KEY_INVALID' });
+  let body = {};
+  try { body = await res.json(); } catch (e) {}
+  if (res.status === 200) return { ok: true, articles: body.total_articles, chunks: body.total_chunks, errors: body.errors || [] };
+  return { failed: body.detail || ('爬取失败 (' + res.status + ')') };
+}
+
+async function startScrape() {
+  closeScrapeConfirm();
+  globalBusy = true;
+  const scrapeBtn = $('scrapeBtn');
+  const uploadBtn = $('uploadBtn');
+  scrapeBtn.disabled = true;
+  uploadBtn.disabled = true;
+  scrapeBtn.textContent = '⏳ 运行中…';
+  $('scrapeStatus').hidden = false;
+  $('scrapeStatus').classList.add('pulse');
+  $('scrapeResult').hidden = true;
+
+  const pages = parseInt($('scrapePages').value, 10) || 2;
+  let result;
+  try {
+    result = await scrapeNow(pages);
+  } catch (err) {
+    result = err.code === 'KEY_INVALID' ? { keyInvalid: true } : { failed: '无法连接服务' };
+  }
+
+  globalBusy = false;
+  scrapeBtn.disabled = false;
+  uploadBtn.disabled = false;
+  scrapeBtn.textContent = '开始抓取';
+  $('scrapeStatus').hidden = true;
+  $('scrapeStatus').classList.remove('pulse');
+
+  const out = $('scrapeResult');
+  out.hidden = false;
+  out.textContent = '';
+
+  if (result.keyInvalid) {
+    const b = document.createElement('div');
+    b.className = 'banner banner-error';
+    b.textContent = '❌ API Key 无效';
+    out.appendChild(b);
+    handleApi401();
+    return;
+  }
+  if (result.failed) {
+    const b = document.createElement('div');
+    b.className = 'banner banner-error';
+    b.textContent = '❌ ' + result.failed;
+    out.appendChild(b);
+    return;
+  }
+
+  const line = document.createElement('div');
+  line.className = 'stat-line';
+  line.innerHTML = '';
+  line.append('✅ 抓取完成：新增文章 ');
+  const a = document.createElement('b'); a.textContent = result.articles ?? 0;
+  const c = document.createElement('b'); c.textContent = result.chunks ?? 0;
+  line.append(a, ' 篇 / ', c, ' 块');
+  out.appendChild(line);
+
+  if (result.errors && result.errors.length) {
+    const errList = document.createElement('div');
+    errList.className = 'err-list';
+    errList.textContent = '部分文件出错：' + result.errors.slice(0, 5).join('；');
+    out.appendChild(errList);
+  }
+  fetchKbStats();
+}
+
+// ═══════════════════════════════════════
+// 事件绑定
+// ═══════════════════════════════════════
+$('unlockBtn').addEventListener('click', handleUnlock);
+$('unlockInput').addEventListener('keydown', e => { if (e.key === 'Enter') handleUnlock(); });
+$('reenterKey').addEventListener('click', handleReenter);
+$('forgetKey').addEventListener('click', handleForget);
+$('refreshStatsBtn').addEventListener('click', fetchKbStats);
+$('fileInput').addEventListener('change', handleFileSelect);
+$('uploadBtn').addEventListener('click', startUpload);
+$('scrapeBtn').addEventListener('click', openScrapeConfirm);
+$('scrapeCancelBtn').addEventListener('click', closeScrapeConfirm);
+$('scrapeConfirmBtn').addEventListener('click', startScrape);
+$('scrapeConfirmModal').addEventListener('click', e => { if (e.target === $('scrapeConfirmModal')) closeScrapeConfirm(); });
+
+// 启动
+loadSavedKey();
+fetchKbStats();
+</script>
+</body>
+</html>
