@@ -10,8 +10,10 @@ LangGraph Agent 工具定义 —— 项目三
 """
 
 import ast
+import contextvars
 import logging
 import operator as op
+import os
 import sys
 from pathlib import Path
 
@@ -45,6 +47,112 @@ def _get_vector_store() -> VectorStore:
         )
         logger.info("VectorStore 单例初始化完成 (db_path=%s)", chroma_path)
     return _vector_store
+
+
+# ═══════════════════════════════════════════════════════════════
+# 主动工作记忆 —— Agent 自己决定存什么、查什么
+#
+# 存储：Redis（同步客户端。execute_tool 是同步上下文，不能直接 await 异步 Redis）
+# 作用域：按会话（session_id）隔离，用 contextvars 随请求传递。
+#         同一时间处理多个用户时，各请求的记忆互不串扰。
+# 降级：Redis 连不上 → 记忆工具返回提示文本，Agent 照常干活，绝不抛异常。
+# ═══════════════════════════════════════════════════════════════
+
+_MEMORY_TTL = int(os.getenv("MEMORY_TTL", str(7 * 24 * 3600)))  # 记忆默认保留 7 天
+_memory_client = None
+_session_var: contextvars.ContextVar[str] = contextvars.ContextVar("agent_session", default="default")
+
+
+def set_session(session_id: str) -> None:
+    """设置当前会话 ID（工作记忆按会话隔离）。Web/CLI 每次对话前调用。"""
+    _session_var.set(session_id or "default")
+
+
+def _get_memory_client():
+    """懒加载同步 Redis 客户端；不可用时返回 None（记忆功能降级不报错）。"""
+    global _memory_client
+    if _memory_client is None:
+        try:
+            import redis as sync_redis
+            _memory_client = sync_redis.Redis.from_url(
+                os.getenv("REDIS_URL", "redis://localhost:6379"),
+                decode_responses=True,
+                socket_connect_timeout=3,
+                protocol=2,  # 与项目一一致：兼容旧版 Redis（不支持 RESP3 的 HELLO）
+            )
+        except Exception:
+            _memory_client = None
+    return _memory_client
+
+
+def _memory_key(key: str) -> str:
+    """记忆的 Redis key：agent:memory:{会话}:{主题}"""
+    return f"agent:memory:{_session_var.get()}:{key}"
+
+
+def save_memory(key: str, content: str) -> str:
+    """保存一条记忆。key 是记忆的主题（如'用户学校'），content 是记忆内容。"""
+    if not key.strip():
+        return "[WARN]  记忆主题（key）不能为空"
+    if not content.strip():
+        return "[WARN]  记忆内容不能为空"
+
+    client = _get_memory_client()
+    if client is None:
+        return "[WARN]  记忆功能不可用（Redis 未连接），跳过保存"
+
+    try:
+        client.set(_memory_key(key), content, ex=_MEMORY_TTL)
+        return f"[OK]  已保存记忆「{key}」"
+    except Exception:
+        return "[WARN]  记忆写入失败，跳过保存"
+
+
+def search_memory(query: str) -> str:
+    """检索与 query 相关的记忆（在 key 和内容里做子串匹配）。"""
+    if not query.strip():
+        return "[WARN]  查询内容不能为空"
+
+    client = _get_memory_client()
+    if client is None:
+        return "[WARN]  记忆功能不可用（Redis 未连接）"
+
+    try:
+        prefix = f"agent:memory:{_session_var.get()}:"
+        keys = client.keys(prefix + "*")
+        q = query.strip().lower()
+        hits = []
+        for k in keys or []:
+            short_key = k[len(prefix):]
+            content = client.get(k) or ""
+            if q in short_key.lower() or q in content.lower():
+                hits.append(f"  • {short_key}: {content}")
+        if not hits:
+            return "[MEMORY]  没有找到相关记忆"
+        return "[MEMORY]  找到相关记忆：\n" + "\n".join(hits)
+    except Exception:
+        return "[WARN]  记忆检索失败"
+
+
+def clear_memory(key: str) -> str:
+    """删除一条记忆；key 为 '*' 或 'all' 时清空当前会话全部记忆。"""
+    client = _get_memory_client()
+    if client is None:
+        return "[WARN]  记忆功能不可用（Redis 未连接）"
+
+    try:
+        prefix = f"agent:memory:{_session_var.get()}:"
+        if key in ("*", "all", "全部"):
+            keys = client.keys(prefix + "*") or []
+            if keys:
+                client.delete(*keys)
+            return f"[OK]  已清空 {len(keys)} 条记忆"
+        deleted = client.delete(prefix + key)
+        if deleted:
+            return f"[OK]  已删除记忆「{key}」"
+        return f"[WARN]  记忆「{key}」不存在"
+    except Exception:
+        return "[WARN]  记忆删除失败"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -105,6 +213,50 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["expression"],
+        },
+    },
+    {
+        "name": "save_memory",
+        "description": (
+            "保存一条工作记忆。当用户主动透露个人偏好、重要信息，或你需要跨问题记住的内容时使用。"
+            "key 是记忆主题（如'用户姓名'、'用户所在校区'），content 是记忆内容。"
+            "之后可通过 search_memory 检索到这条记忆。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "记忆主题，如 '用户学校'"},
+                "content": {"type": "string", "description": "记忆内容，如 '张同学在河南工学院'"},
+            },
+            "required": ["key", "content"],
+        },
+    },
+    {
+        "name": "search_memory",
+        "description": (
+            "检索之前保存的工作记忆。当用户问题可能涉及之前的对话信息或用户偏好时，先调用本工具看看。"
+            "返回与 query 相关的记忆条目；没有则返回空结果。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索关键词，如 '学校'、'偏好'"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "clear_memory",
+        "description": (
+            "删除一条工作记忆；key 传 '*' 或 'all' 表示清空全部记忆。"
+            "当用户明确要求忘记某信息时使用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "要删除的记忆主题，或 '*' 清空全部"},
+            },
+            "required": ["key"],
         },
     },
 ]
@@ -169,25 +321,34 @@ def execute_tool(name: str, arguments: dict) -> str:
             return _list_sources()
         elif name == "calculate":
             return _calculate(arguments.get("expression", ""))
+        elif name == "save_memory":
+            return save_memory(
+                key=arguments.get("key", ""),
+                content=arguments.get("content", ""),
+            )
+        elif name == "search_memory":
+            return search_memory(arguments.get("query", ""))
+        elif name == "clear_memory":
+            return clear_memory(arguments.get("key", ""))
         else:
-            return f"❌ 未知工具: {name}"
+            return f"[X]  未知工具: {name}"
     except Exception as e:
         logger.exception("工具 %s 执行异常", name)
-        return f"❌ 工具执行失败 ({name}): {e}"
+        return f"[X]  工具执行失败 ({name}): {e}"
 
 
 def _search_knowledge_base(query: str, top_k: int = 5) -> str:
     """在知识库中向量检索相关文档片段。"""
     if not query or not query.strip():
-        return "⚠️ 查询内容为空，请提供有效的搜索文本。"
+        return "[WARN]  查询内容为空，请提供有效的搜索文本。"
 
     vs = _get_vector_store()
     results = vs.search_similar(query.strip(), n_results=min(top_k, 10))
 
     if not results:
-        return "📭 知识库中未找到与查询相关的内容。建议先使用 list_knowledge_sources 查看已有文档。"
+        return "[EMPTY]  知识库中未找到与查询相关的内容。建议先使用 list_knowledge_sources 查看已有文档。"
 
-    lines = [f"🔍 「{query}」的检索结果（共 {len(results)} 条）："]
+    lines = [f"[SEARCH]  「{query}」的检索结果（共 {len(results)} 条）："]
     for i, r in enumerate(results, 1):
         text_preview = r["text"][:300].replace("\n", " ")
         source = r.get("metadata", {}).get("source", "未知来源")
@@ -207,7 +368,7 @@ def _list_sources() -> str:
     total = vs.count()
 
     if total == 0:
-        return "📭 知识库为空，还没有入库任何文档。"
+        return "[EMPTY]  知识库为空，还没有入库任何文档。"
 
     all_data = vs.collection.get()
     source_counts: dict[str, int] = {}
@@ -216,7 +377,7 @@ def _list_sources() -> str:
             src = meta["source"]
             source_counts[src] = source_counts.get(src, 0) + 1
 
-    lines = [f"📚 知识库共有 {total} 个文档块，来自 {len(source_counts)} 个文件："]
+    lines = [f"[LIB]  知识库共有 {total} 个文档块，来自 {len(source_counts)} 个文件："]
     for src, count in sorted(source_counts.items(), key=lambda x: -x[1]):
         lines.append(f"  • {src}  ({count} 块)")
     return "\n".join(lines)
@@ -225,10 +386,10 @@ def _list_sources() -> str:
 def _calculate(expression: str) -> str:
     """安全地计算数学表达式。"""
     if not expression or not expression.strip():
-        return "⚠️ 请提供要计算的数学表达式。"
+        return "[WARN]  请提供要计算的数学表达式。"
 
     try:
         result = _safe_eval(expression)
-        return f"✅ 计算结果: {expression} = {result}"
-    except (SyntaxError, ValueError, TypeError) as e:
-        return f"❌ 无法计算表达式 '{expression}': {e}"
+        return f"[OK]  计算结果: {expression} = {result}"
+    except (SyntaxError, ValueError, TypeError, ZeroDivisionError) as e:
+        return f"[X]  无法计算表达式 '{expression}': {e}"

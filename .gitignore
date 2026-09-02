@@ -33,3 +33,8 @@ scraped_docs/
 
 # 外网穿透工具二进制
 ngrok.exe
+
+# 个人文件（简历 / 面试笔记，不入库）
+/zzs.pdf
+/会话管理.md
+/模拟面试答案详解.txt

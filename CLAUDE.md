@@ -1,13 +1,13 @@
 # AI Agent 项目集
 
-三个递进式项目：从底层手写到框架应用，覆盖 RAG 知识库、Agent 工作流引擎、LangGraph ReAct Agent。
+三个递进式项目：从底层手写到框架应用，覆盖 RAG 知识库、Agent 工作流引擎、LangGraph 多 Agent 编排引擎。
 
 ## 项目结构
 
 ```
 AI_Agent_Project/
 ├── rag_chat/          # 项目一：RAG 知识库问答系统
-├── langgraph_agent/   # 项目三：LangGraph ReAct Agent
+├── langgraph_agent/   # 项目三：LangGraph 多 Agent 编排引擎
 └── README.md
 ```
 
@@ -59,14 +59,16 @@ AI_Agent_Project/
 | 工具生态 | 7 个内置工具（时间/文件/RAG/搜索/天气） |
 | 测试 | pytest 22 条（Agent 循环 + 工具单元 + Mock LLM） |
 
-## 项目三：LangGraph ReAct Agent
+## 项目三：LangGraph 多 Agent 编排引擎
 
-`langgraph_agent/` — 基于 LangGraph 状态机的 ReAct Agent，对接项目一知识库。
+`langgraph_agent/` — 基于 LangGraph 状态机的「Router 意图路由 + 三子代理」多 Agent 架构，对接项目一知识库。
 
 | 能力 | 技术 |
 |------|------|
-| 状态管理 | StateGraph + 条件路由（should_continue） |
-| LLM 协议 | Anthropic Tool Use 格式 |
+| 意图路由 | Router 节点（LLM 分类 kb/calc/chat），识别不出走 chat |
+| 子代理 | kb / calc / chat 三个独立 ReAct 子图，工具集按角色隔离 |
+| 状态管理 | 父图 StateGraph 嵌套子图 + 子图内 should_continue 条件路由 |
+| LLM 协议 | Anthropic Tool Use 格式（DeepSeek 兼容接口） |
 | 工具 | 知识库检索 / 文档列表 / 安全数学计算 |
 | 安全 | AST 白名单、MAX_ROUNDS=10 兜底 |
 
@@ -79,7 +81,7 @@ AI_Agent_Project/
     │
     ├── MCP 协议 ──→ 项目二（手写 Agent）调用知识库
     │
-    └── 直接导入 ──→ 项目三（LangGraph Agent）调用知识库
+    └── 直接导入 ──→ 项目三（LangGraph 多 Agent）调用知识库
 
 项目二 ── 框架升级 ──→ 项目三
 （手写循环）              （状态机）
