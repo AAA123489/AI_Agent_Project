@@ -51,9 +51,17 @@ def _make_mock_vector_store(**overrides):
 
 @pytest.fixture
 def mock_vs():
-    """注入 mock VectorStore，所有 MCP 工具共享。"""
+    """注入 mock VectorStore，所有 MCP 工具共享。
+
+    search_knowledge_base 已改为复用 app_backend._search_knowledge_base
+    （混合检索），因此需要同时 patch app_backend 的 getter；
+    ingest_file / list_sources 仍走 mcp_server.tools 的 getter。
+    """
     vs = _make_mock_vector_store()
-    with patch("mcp_server.tools._get_vector_store", return_value=vs):
+    with (
+        patch("mcp_server.tools._get_vector_store", return_value=vs),
+        patch("app_backend._get_vector_store", return_value=vs),
+    ):
         yield vs
 
 

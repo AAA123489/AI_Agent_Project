@@ -52,39 +52,26 @@ def _get_vector_store() -> VectorStore:
 
 
 def search_knowledge_base(query: str, top_k: int = 5) -> str:
-    """在知识库中向量检索与 query 最相似的文档片段。
+    """在知识库中检索与 query 最相关的文档片段（混合检索：向量 + BM25 + RRF）。
+
+    与聊天链路共用 app_backend._search_knowledge_base，保证外部 Agent 与站内问答
+    拿到一致结果（含库外主体校验 / 年份过滤 / 罕见词精确召回 / 同文档补块 / 可选重排）。
+    返回格式化文本，含文档片段、来源、相似度与原文链接。
 
     Args:
         query: 搜索查询文本
-        top_k: 返回的最相关文档数，默认 5
+        top_k: 初始召回条数，默认 5（同文档补块后最多可达 20 条）
 
     Returns:
-        格式化的检索结果文本，包含文档片段、来源文件和相似度距离
+        格式化的检索结果文本；失败返回错误说明。
     """
     if not query or not query.strip():
         return "⚠️ 查询内容为空，请提供有效的搜索文本。"
 
     try:
-        vs = _get_vector_store()
-        results = vs.search_similar(query.strip(), n_results=min(top_k, 20))
-
-        if not results:
-            return "📭 知识库中未找到与查询相关的内容。建议先使用 ingest_document 入库相关文档。"
-
-        lines = [f"🔍 「{query}」的检索结果（共 {len(results)} 条）：\n"]
-        for i, r in enumerate(results, 1):
-            text_preview = r["text"][:200].replace("\n", " ")
-            source = r.get("metadata", {}).get("source", "未知来源")
-            distance = r.get("distance", 0)
-            similarity = max(0, 1 - distance)  # 余弦距离 → 相似度
-            lines.append(
-                f"---\n"
-                f"【{i}】来源: {source}\n"
-                f"相似度: {similarity:.2%}  (距离: {distance:.4f})\n"
-                f"内容: {text_preview}..."
-            )
-        return "\n".join(lines)
-
+        # 延迟导入：MCP 服务启动不加载 app_backend 全量模块，首次检索时才接上混合链路
+        from app_backend import _search_knowledge_base
+        return _search_knowledge_base(query.strip(), top_k=min(top_k, 20))
     except Exception as e:
         logger.exception("search_knowledge_base 执行失败")
         return f"❌ 检索失败: {e}"

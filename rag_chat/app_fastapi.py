@@ -8,6 +8,7 @@ app_fastapi.py — FastAPI SSE 后端
 import asyncio
 import contextvars
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, UploadFile, File, Header, Depends, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Request, UploadFile, File, Header, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -105,6 +106,9 @@ _STATIC_DIR = _PROJECT_ROOT / "static"
 
 # 输入上限：单条消息最长字符数（超长直接 422，防撑爆 DeepSeek 上下文）
 MAX_MESSAGE_CHARS = 8000
+# 历史上下文上限：防客户端传超长 history 撑爆 LLM 上下文（最多 20 轮、单条 2000 字）
+MAX_HISTORY_TURNS = 20
+MAX_HISTORY_MSG_CHARS = 2000
 # 上传白名单扩展名 + 大小上限（20MB）
 _ALLOWED_UPLOAD_EXT = {".txt", ".md", ".pdf", ".docx"}
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
@@ -128,6 +132,26 @@ class ChatRequest(BaseModel):
             raise ValueError(f"消息过长（上限 {MAX_MESSAGE_CHARS} 字符）")
         return v
 
+    @field_validator("history")
+    @classmethod
+    def _check_history(cls, v: Optional[list[dict]]) -> Optional[list[dict]]:
+        """校验历史消息：防超长 history 撑爆 LLM 上下文（数量 + 单条长度双重上限）。"""
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("history 必须是数组")
+        if len(v) > MAX_HISTORY_TURNS * 2:
+            raise ValueError(f"历史消息过多（上限 {MAX_HISTORY_TURNS} 轮）")
+        for item in v:
+            if not isinstance(item, dict):
+                raise ValueError("历史消息必须是 {role, content} 对象")
+            content = item.get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("历史消息 content 缺失或为空")
+            if len(content) > MAX_HISTORY_MSG_CHARS:
+                raise ValueError(f"历史消息过长（单条上限 {MAX_HISTORY_MSG_CHARS} 字符）")
+        return v
+
 
 def _verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")) -> str:
     """服务端鉴权：受保护接口的 X-API-Key 必须等于 .env 的 API_KEY。
@@ -139,7 +163,9 @@ def _verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")) -> str:
     if not expected:
         logger.warning("API_KEY 未配置，拒绝所有受保护接口")
         raise HTTPException(status_code=500, detail="服务端未配置 API Key")
-    if x_api_key != expected:
+    # 恒定时间比较：普通 != 在首字符不同时立即返回，可被时序攻击探测 key 长度/前缀
+    provided = x_api_key or ""
+    if not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="无效的 API Key")
     return x_api_key
 
@@ -418,27 +444,34 @@ async def upload(file: UploadFile = File(...), _: str = Depends(_verify_api_key)
         tmp_path = tmp_dir / filename
         tmp_path.write_bytes(content)
 
-        # 调用入库逻辑
-        result = await ingest_files([str(tmp_path)])
-        errs = result.get("errors", [])
-        chunks = result.get("total_chunks", 0)
+        try:
+            # 调用入库逻辑
+            result = await ingest_files([str(tmp_path)])
+            errs = result.get("errors", [])
+            chunks = result.get("total_chunks", 0)
 
-        # 知识库已变化（部分成功也变了），旧查询缓存可能过时，清空
-        await _flush_query_cache()
+            # 知识库已变化（部分成功也变了），旧查询缓存可能过时，清空
+            await _flush_query_cache()
 
-        if errs:
-            return JSONResponse({
+            if errs:
+                return JSONResponse({
+                    "filename": filename,
+                    "chunks": chunks,
+                    "status": "partial",
+                    "errors": errs,
+                }, status_code=207)
+
+            return {
                 "filename": filename,
                 "chunks": chunks,
-                "status": "partial",
-                "errors": errs,
-            }, status_code=207)
-
-        return {
-            "filename": filename,
-            "chunks": chunks,
-            "status": "ok",
-        }
+                "status": "ok",
+            }
+        finally:
+            # 临时文件入库后立即删除，防 scraped_docs/_uploads 堆积
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                logger.warning("清理临时文件失败: %s", tmp_path, exc_info=True)
     except Exception:
         logger.exception("上传失败")
         return JSONResponse({"detail": "上传处理失败，请检查文件格式后重试"}, status_code=500)
@@ -459,25 +492,50 @@ async def scrape(pages: int = 2, _: str = Depends(_verify_api_key)):
     }
 
 
-@app.post("/scrape/start")
-async def scrape_start(pages: int = 2, _: str = Depends(_verify_api_key)):
-    """实际执行爬虫（同步等待完成；受保护）"""
+# ── 爬虫并发控制 ──
+# 原实现：请求里 await 整个爬取（全站 1~2 小时），连接一直挂着、客户端一断开爬虫就中断，
+# 且无锁，两个请求可同时开爬。改后台任务 + 运行标记：请求立即返回，断开不影响爬取。
+_scrape_lock = asyncio.Lock()
+_scrape_running = False
+
+
+async def _run_scrape_and_flush(pages: int) -> None:
+    """后台执行爬虫 + 清空旧缓存；结束后复位运行标记。"""
+    global _scrape_running
     try:
-        result = await run_scraper_pipeline(max_pages=pages)
+        async with _scrape_lock:
+            result = await run_scraper_pipeline(max_pages=pages)
         # 爬虫入库后知识库已变化，旧查询缓存可能过时，清空
         await _flush_query_cache()
-        return {
-            "status": "ok",
-            "total_articles": result.get("total_articles", 0),
-            "total_chunks": result.get("total_chunks", 0),
-            "errors": result.get("errors", []),
-        }
+        logger.info(
+            "爬虫后台任务完成: 文章 %d 篇, 分块 %d, 错误 %d 条",
+            result.get("total_articles", 0),
+            result.get("total_chunks", 0),
+            len(result.get("errors", [])),
+        )
     except Exception:
-        logger.exception("爬虫失败")
-        return JSONResponse({
-            "status": "error",
-            "detail": "爬虫执行失败，请查看服务端日志",
-        }, status_code=500)
+        logger.exception("后台爬虫任务失败")
+    finally:
+        _scrape_running = False
+
+
+@app.post("/scrape/start")
+async def scrape_start(background_tasks: BackgroundTasks, pages: int = 2, _: str = Depends(_verify_api_key)):
+    """触发全站爬虫（后台运行、立即返回；防重复触发；受保护）"""
+    global _scrape_running
+    # 检查 + 置位之间无 await，单事件循环内原子，不会并发双开
+    if _scrape_running:
+        return JSONResponse(
+            {"detail": "爬虫已在运行中，请勿重复触发"},
+            status_code=409,
+        )
+    _scrape_running = True
+    background_tasks.add_task(_run_scrape_and_flush, pages)
+    return {
+        "status": "started",
+        "message": "爬虫已在后台启动，完成后会自动清空旧缓存。可稍后通过 /kb-stats 查看知识库变化。",
+        "pages": pages,
+    }
 
 
 @app.get("/kb-stats")
