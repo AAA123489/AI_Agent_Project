@@ -100,7 +100,7 @@ class TestMaxRoundsSafety:
 
 
 class TestKbFlow:
-    def test_kb_question_uses_vector_store(self, monkeypatch):
+    def test_kb_question_uses_hybrid_search(self, monkeypatch):
         script = [
             _text("kb"),                                                     # ① Router 分类
             _tool_use("search_knowledge_base", {"query": "河南工学院"}, "toolu_kb"),  # ② kb 要检索
@@ -109,15 +109,16 @@ class TestKbFlow:
         fake, _ = make_fake_llm(script)
         monkeypatch.setattr(agent_module, "call_llm", fake)
 
-        class FakeVectorStore:
-            def search_similar(self, query, n_results=5):
-                return [{
-                    "text": "河南工学院位于新乡市",
-                    "metadata": {"source": "官网.md"},
-                    "distance": 0.2,
-                }]
+        # kb 工具复用项目一混合检索：mock 委托点返回其展示文本
+        def fake_p1_search(query, top_k):
+            assert query == "河南工学院"
+            return (
+                "[1] 相似度: 90.0% | 来源: 官网.md | 日期: 2026-01-01 | 年份: 2026\n"
+                "   原文链接: https://www.hait.edu.cn/info/1.htm\n"
+                "   片段: 河南工学院位于新乡市"
+            )
 
-        monkeypatch.setattr("tools._get_vector_store", lambda: FakeVectorStore())
+        monkeypatch.setattr("tools._p1_hybrid_search", fake_p1_search)
 
         agent = build_agent()
         final = _ainvoke(agent, "学校在哪里")

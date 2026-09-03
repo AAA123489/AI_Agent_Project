@@ -8,8 +8,11 @@ import pytest
 from tools import (
     _calculate,
     _safe_eval,
+    _search_knowledge_base,
     clear_memory,
     execute_tool,
+    get_kb_sources,
+    reset_kb_sources,
     save_memory,
     search_memory,
     set_session,
@@ -144,24 +147,57 @@ class TestSearchKnowledgeBase:
         assert "[WARN]" in execute_tool("search_knowledge_base", {"query": " "})
 
     def test_empty_library(self, monkeypatch):
-        class FakeVectorStore:
-            def search_similar(self, query, n_results=5):
-                return []
-
-        monkeypatch.setattr("tools._get_vector_store", lambda: FakeVectorStore())
+        # 项目一混合检索返回"未找到"短句 → 工具转成 [EMPTY] 语义
+        monkeypatch.setattr("tools._p1_hybrid_search", lambda q, top_k: "知识库中未找到相关内容。")
         result = execute_tool("search_knowledge_base", {"query": "学校"})
         assert "[EMPTY]" in result
 
     def test_returns_results(self, monkeypatch):
-        class FakeVectorStore:
-            def search_similar(self, query, n_results=5):
-                return [{
-                    "text": "河南工学院位于新乡市",
-                    "metadata": {"source": "官网.md"},
-                    "distance": 0.2,
-                }]
-
-        monkeypatch.setattr("tools._get_vector_store", lambda: FakeVectorStore())
+        # 复用项目一混合检索（工具内部不再直接查向量库，mock 委托点即可）
+        fake_text = (
+            "[1] 相似度: 85.0% | 来源: 官网.md | 日期: 2026-01-01 | 年份: 2026\n"
+            "   原文链接: https://www.hait.edu.cn/info/1.htm\n"
+            "   片段: 河南工学院位于新乡市"
+        )
+        monkeypatch.setattr("tools._p1_hybrid_search", lambda q, top_k: fake_text)
         result = execute_tool("search_knowledge_base", {"query": "河南工学院"})
         assert "河南工学院位于新乡市" in result
         assert "官网.md" in result
+
+
+# ── KB 结构化来源（含原文 url，供前端『查看原文』链接）──────────
+
+class TestKbSources:
+    """_search_knowledge_base 走项目一混合检索后，解析其展示文本、把含 url 的来源按会话存起来。"""
+
+    FAKE = (
+        "[1] 相似度: 80.0% | 来源: 学生处/学费减免.txt | 日期: 2026-01-01 | 年份: 2026\n"
+        "   原文链接: https://www.hait.edu.cn/info/1.htm\n"
+        "   片段: 关于学费减免的通知\n\n"
+        "[2] 相似度: 70.0% | 来源: 学生处/学费减免.txt\n"
+        "   原文链接: https://www.hait.edu.cn/info/1.htm\n"
+        "   片段: 学费减免标准（同一来源应去重）"
+    )
+
+    def test_stash_docs_with_url(self, monkeypatch):
+        monkeypatch.setattr("tools._p1_hybrid_search", lambda q, top_k: self.FAKE)
+        set_session("src_user")
+        reset_kb_sources("src_user")
+        _search_knowledge_base("学费减免")
+        docs = get_kb_sources("src_user")
+        assert len(docs) == 1  # 去重
+        assert docs[0]["url"] == "https://www.hait.edu.cn/info/1.htm"
+        assert docs[0]["source"] == "学生处/学费减免.txt"
+        assert docs[0]["similarity"] == pytest.approx(0.8)  # 解析「80.0%」
+
+    def test_reset_and_session_isolation(self, monkeypatch):
+        monkeypatch.setattr("tools._p1_hybrid_search", lambda q, top_k: self.FAKE)
+        set_session("user_a")
+        reset_kb_sources("user_a")
+        _search_knowledge_base("x")
+        # 同会话可取到，换会话取不到（隔离）
+        assert len(get_kb_sources("user_a")) == 1
+        assert get_kb_sources("user_b") == []
+        # reset 清空
+        reset_kb_sources("user_a")
+        assert get_kb_sources("user_a") == []

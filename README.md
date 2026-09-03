@@ -21,7 +21,7 @@
 |------|------|--------|------|------|
 | **项目一** | RAG 知识库问答系统 | FastAPI · ChromaDB · DeepSeek · Redis · SSE | 57 条 | ✅ 完成 |
 | **项目二** | 手写 Agent 工作流引擎（事件驱动） | Python · asyncio · SSE · MCP | 22 条 | ✅ 完成（独立仓库） |
-| **项目三** | LangGraph 多 Agent 编排引擎 | LangGraph · DeepSeek · ChromaDB · Redis | 36 条 | ✅ 完成 |
+| **项目三** | LangGraph 多 Agent 编排引擎 | LangGraph · DeepSeek · ChromaDB · Redis | 38 条 | ✅ 完成 |
 
 ## 项目结构
 
@@ -160,7 +160,7 @@ cd langgraph_agent && python agent.py
 cd langgraph_agent && python app_web.py   # http://localhost:8001
 
 # 测试
-cd langgraph_agent && python -m pytest tests/ -v   # 36 条用例
+cd langgraph_agent && python -m pytest tests/ -v   # 38 条用例
 ```
 
 ### 配置（`.env`，优先读 rag_chat/.env）

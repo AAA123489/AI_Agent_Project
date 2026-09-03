@@ -50,7 +50,7 @@ else:
     load_dotenv()
 
 from agent import build_agent, extract_final_answer  # noqa: E402
-from tools import set_session  # noqa: E402
+from tools import get_kb_sources, reset_kb_sources, set_session  # noqa: E402
 
 # Redis（可选，用于服务端对话历史持久化）
 try:
@@ -207,6 +207,7 @@ async def run_langgraph_sse(message: str, history: list[dict], session_id: str):
     """SSE 帧生成器：节点级流式驱动 LangGraph 多 Agent。"""
     agent = build_agent()
     set_session(session_id)  # 主动工作记忆按会话隔离（contextvars 随请求传递）
+    reset_kb_sources(session_id)  # 清空上次请求残留的 KB 来源
 
     initial_state = {
         "messages": list(history or []) + [{"role": "user", "content": message}],
@@ -239,7 +240,13 @@ async def run_langgraph_sse(message: str, history: list[dict], session_id: str):
         # 答案切块流出，保留流式体验（前端逐块渲染）
         for i in range(0, len(answer), 30):
             yield {"type": "text", "content": answer[i:i + 30]}
-        yield {"type": "done", "thinking": [], "sources": []}
+
+        # KB 子代理命中过知识库 → 回传结构化来源（chat.html 据此渲染「📎 查看原文」链接）
+        kb_docs = get_kb_sources(session_id)
+        if kb_docs:
+            yield {"type": "sources", "docs": kb_docs}
+
+        yield {"type": "done", "thinking": [], "sources": kb_docs}
 
         # 持久化本轮对话到 Redis（多轮记忆）
         await _save_to_redis(session_id, message, answer)

@@ -68,6 +68,46 @@ def set_session(session_id: str) -> None:
     _session_var.set(session_id or "default")
 
 
+# ── 本次请求检索到的结构化知识库来源（按会话存）──
+# 存 {source, url, similarity, text, ...}，供 Web 层以 sources 事件回传前端渲染「📎 查看原文」。
+# 为什么不用 contextvar 回传：LangGraph 节点可能在子任务上下文里执行，工具里 set 的值写进
+# 子上下文副本，回不到发起方。改按 session 记在模块级 dict：检索处能读到 _session_var
+# （session 是从发起方随上下文传下来的），Web 结束后按同一 session 取值，天然按用户隔离。
+_kb_sources_by_session: dict[str, list] = {}
+
+
+def get_kb_sources(session_id: str) -> list:
+    """读取某会话本次 KB 检索命中的来源（含原文 url）。"""
+    return _kb_sources_by_session.get(session_id or "default", [])
+
+
+def reset_kb_sources(session_id: str) -> None:
+    """Web 每次对话前清空该会话的来源缓存（防止跨请求残留）。"""
+    _kb_sources_by_session.pop(session_id or "default", None)
+
+
+def _to_source_docs(results: list[dict]) -> list[dict]:
+    """把 VectorStore 检索结果转成前端来源块需要的字段（对齐 rag_chat/static/chat.html）。"""
+    docs: list[dict] = []
+    seen: set[str] = set()
+    for r in results:
+        meta = r.get("metadata") or {}
+        src = meta.get("source", "未知来源")
+        if src in seen:
+            continue
+        seen.add(src)
+        docs.append({
+            "source": src,
+            "url": meta.get("url", "") or "",
+            "date": meta.get("publish_date", "") or "",
+            "year": meta.get("year", "") or "",
+            "category": meta.get("category", "") or "",
+            "similarity": round(max(0, 1 - r.get("distance", 0)), 4),
+            "text": (r.get("text") or "")[:200],
+        })
+    return docs
+
+
 def _get_memory_client():
     """懒加载同步 Redis 客户端；不可用时返回 None（记忆功能降级不报错）。"""
     global _memory_client
@@ -337,18 +377,86 @@ def execute_tool(name: str, arguments: dict) -> str:
         return f"[X]  工具执行失败 ({name}): {e}"
 
 
+def _p1_hybrid_search(query: str, top_k: int) -> str:
+    """调用项目一 app_backend 的完整混合检索（延迟导入，避免启动就拖进项目一全家桶）。
+
+    BM25+RRF 融合、人名/专有名词 $contains 精确召回（张尊舒这种人名纯向量捞不到）、
+    同文档补块、年份过滤、库外拒答——全在项目一 app_backend 里按 100 题评测调优过。
+    这里直接复用，保证「同一个问题，项目一和项目三检索结果一致」。
+    """
+    from app_backend import _search_knowledge_base as _p1_search
+    return _p1_search(query, top_k=top_k)
+
+
+def _parse_source_blocks(text: str) -> list[dict]:
+    """从项目一检索返回的展示文本里提取结构化来源（供前端渲染『📎 查看原文』）。
+
+    项目一每块格式固定：
+        [i] 相似度: X% | 来源: 分类/文件名.txt | 日期: ... | ...
+           原文链接: https://...
+           片段: ...
+    """
+    import re
+    docs: list[dict] = []
+    seen: set[str] = set()
+    for block in (text or "").split("\n\n"):
+        src_m = re.search(r"来源:\s*([^|\n]+)", block)
+        url_m = re.search(r"原文链接:\s*(\S+)", block)
+        sim_m = re.search(r"相似度:\s*([\d.]+)%", block)
+        if not src_m or not url_m:
+            continue
+        src = src_m.group(1).strip()
+        if src in seen:
+            continue
+        seen.add(src)
+        snippet = ""
+        frag_m = re.search(r"片段:\s*(.*)", block, re.S)
+        if frag_m:
+            snippet = frag_m.group(1).split("...")[0].replace("\n", " ").strip()[:160]
+        docs.append({
+            "source": src,
+            "url": url_m.group(1).strip(),
+            "similarity": round(float(sim_m.group(1)) / 100, 4) if sim_m else 0.0,
+            "text": snippet,
+        })
+    return docs
+
+
 def _search_knowledge_base(query: str, top_k: int = 5) -> str:
-    """在知识库中向量检索相关文档片段。"""
-    if not query or not query.strip():
+    """在知识库中检索相关文档片段。
+
+    走项目一同源的混合检索（BM25+RRF+精确召回+补块）。项目一已按 100 题评测调优，
+    纯向量对这些场景（尤其人名/专有名词）会漏召回，所以这里不再自己调 vs.search_similar。
+    """
+    q = (query or "").strip()
+    if not q:
         return "[WARN]  查询内容为空，请提供有效的搜索文本。"
 
-    vs = _get_vector_store()
-    results = vs.search_similar(query.strip(), n_results=min(top_k, 10))
+    try:
+        text = _p1_hybrid_search(q, min(top_k, 10))
+    except Exception as e:
+        logger.warning("混合检索不可用（%s），回退纯向量", e)
+        return _search_pure_vector(q, top_k)
 
+    # 存结构化来源（含原文 url），供 Web 层以 sources 事件回传前端
+    _kb_sources_by_session[_session_var.get()] = _parse_source_blocks(text)
+
+    if not text or "知识库中未找到相关内容" in text:
+        return "[EMPTY]  知识库中未找到与查询相关的内容。建议先使用 list_knowledge_sources 查看已有文档。"
+    return f"[SEARCH]  「{q}」检索结果（与项目一同源混合检索）：\n\n{text}"
+
+
+def _search_pure_vector(query: str, top_k: int = 5) -> str:
+    """回退方案：纯向量检索。正常走不到，仅当项目一混合检索异常时兜底。"""
+    vs = _get_vector_store()
+    try:
+        results = vs.search_similar(query, n_results=min(top_k, 10))
+    except Exception as e:
+        return f"[X]  知识库检索异常: {e}"
+    _kb_sources_by_session[_session_var.get()] = _to_source_docs(results)
     if not results:
         return "[EMPTY]  知识库中未找到与查询相关的内容。建议先使用 list_knowledge_sources 查看已有文档。"
-
-    lines = [f"[SEARCH]  「{query}」的检索结果（共 {len(results)} 条）："]
+    lines = [f"[SEARCH]  「{query}」的检索结果（共 {len(results)} 条，纯向量回退）："]
     for i, r in enumerate(results, 1):
         text_preview = r["text"][:300].replace("\n", " ")
         source = r.get("metadata", {}).get("source", "未知来源")

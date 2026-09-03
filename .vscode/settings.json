@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "./rag_chat",
+        "./langgraph_agent"
+    ]
+}
