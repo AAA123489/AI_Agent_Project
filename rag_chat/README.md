@@ -195,6 +195,26 @@ python app_fastapi.py
 - **top_k 与块大小强耦合**：小块需要多取补全信息，top_k=8 是 300 字块的甜点
 - **温度 0.3 为甜点**：0.1~0.4 区间内 0.3 是峰值（46），两端回落（0.4=36 / 0.2=30 / 0.1=28），1.0 全开随机性在数字题上崩盘（12 分）——数字型测试题对高温极敏感，要求精确数值时务必用低温
 
+## 评测
+
+6 题基准（60 分制）可复跑，两个脚本：
+
+| 文件 | 作用 |
+|------|------|
+| `eval_baseline.py` | 跑固定 6 题（真实链路：混合检索 + LLM），落盘每题回答与召回来源 |
+| `eval_score.py` | 按「基准事实表 + 60 分制规则」调 DeepSeek 逐题打分，输出每题分与总分 |
+
+```bash
+python eval_baseline.py --tag topk8                              # → eval_results_baseline_topk8.json
+python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
+```
+
+- 检索参数可用命令行覆盖做消融：`--rerank on|off`（默认 off，对齐 60/60 那次配置）、`--top-k N`、`--mode hybrid|vector`
+- 基准事实表与评分规则内嵌在 `eval_score.py` 的 `FACT_TABLE` / `SCORING_PROMPT`，改题或改真值只动这一处
+- 最近一次复跑：2026-09-16，hybrid / top_k=8 / rerank=off → **60/60**（第 6 题库外题正确拒答）
+
+> 25/50/100 题那三套随机评测的题库与脚本从未入库，已丢失、无法复跑。
+
 ## MCP 工具
 
 `mcp_server/` 通过 MCP 协议暴露：知识库检索 / 文档列表 / 文档入库，供项目二（手写 Agent）等外部 Agent 调用。

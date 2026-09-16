@@ -36,16 +36,18 @@ AI_Agent_Project/
 - `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
 - `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）、`RETRIEVAL_RERANK=off`（重排默认关，遇表格行值题可临时开，代价每问 +1.9s）
 
-**命中率成绩单**（评测脚本已清理删除，如需复测需重建）：
+**命中率成绩单**（6 题基准可复跑：`rag_chat/eval_baseline.py` + `eval_score.py`）：
 
 | 评测 | 命中率 |
 |------|--------|
-| 6 题基准（Qwen 60 分制） | **60/60** |
+| 6 题基准（60 分制，2026-09-16 复跑） | **60/60** |
 | 25 题随机 | **96%** |
 | 50 题随机 | **100%** |
 | 100 题随机（回归后） | **95%** |
 
-> 详细评测过程与改造历史见 [会话备份.md](会话备份.md) 与 [rag_chat/docs/改进记录.md](rag_chat/docs/改进记录.md)。
+> 6 题基准复跑：`cd rag_chat && python eval_baseline.py --tag topk8 && python eval_score.py eval_results_baseline_topk8.json`
+> 25/50/100 题那三套的题库与脚本从未入库、已彻底丢失，无法复跑（成绩仅存于表内）。
+> 详细评测过程与改造历史见 [rag_chat/docs/改进记录.md](rag_chat/docs/改进记录.md)。
 
 ## 项目二：Agent 工作流引擎
 
