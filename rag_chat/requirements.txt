@@ -43,3 +43,11 @@ torch==2.13.0
 transformers==5.14.1
 huggingface_hub==1.24.0
 mcp==1.28.1
+# 召回自检图（src/recall_guard.py）：LangGraph 状态机，条件边 + 改写重检环
+# 下面 5 个是 langgraph 的传递依赖，一并钉住版本（缺了换机重装会崩）
+langgraph==1.2.10
+langchain-core==1.5.2
+langgraph-checkpoint==4.1.1
+langgraph-prebuilt==1.1.0
+langgraph-sdk==0.4.2
+xxhash==3.8.1

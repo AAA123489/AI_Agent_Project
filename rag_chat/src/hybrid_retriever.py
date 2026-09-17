@@ -134,11 +134,15 @@ def rrf_fuse(vector_results: list[dict], bm25_results: list[dict], k: int = 60, 
 
     - 按 text 去重识别同一块（块内容相同即同一块，兼容不同爬取目录的重复）
     - 重复出现时保留 similarity 更高（distance 更小）的一份，保证展示值不虚低
+    - 另存 vector_distance：融合后 distance 可能是 BM25 的归一化分（第一名恒为 0.0），
+      不能当相似度用；向量路的原始余弦距离单独保留在 vector_distance 字段，
+      供召回自检（src/recall_guard.py）做可信判定。只有向量路命中的块才有这个字段。
     """
     scores: dict[str, float] = {}
     docs: dict[str, dict] = {}
+    vec_dist: dict[str, float] = {}
 
-    def _add(ranked: list[dict]) -> None:
+    def _add(ranked: list[dict], is_vector: bool = False) -> None:
         for rank, doc in enumerate(ranked, 1):
             text = doc.get("text", "")
             if not text:
@@ -147,11 +151,19 @@ def rrf_fuse(vector_results: list[dict], bm25_results: list[dict], k: int = 60, 
             old = docs.get(text)
             if old is None or doc.get("distance", 1.0) < old.get("distance", 1.0):
                 docs[text] = doc
+            if is_vector and text not in vec_dist:
+                vec_dist[text] = doc.get("distance", 1.0)
 
-    _add(vector_results)
+    _add(vector_results, is_vector=True)
     _add(bm25_results)
     ranked = sorted(docs.items(), key=lambda kv: -scores[kv[0]])
-    return [d for _, d in ranked[:top_n]]
+    out = []
+    for text, doc in ranked[:top_n]:
+        if text in vec_dist:
+            out.append({**doc, "vector_distance": vec_dist[text]})  # 副本，不改动入参 dict
+        else:
+            out.append(doc)
+    return out
 
 
 class Reranker:

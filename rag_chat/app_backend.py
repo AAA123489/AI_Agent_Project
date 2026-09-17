@@ -9,12 +9,14 @@ app_backend.py — Agent 后端封装
 
 import ast
 import asyncio
+import concurrent.futures
 import json
 import logging
 import operator as op
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -59,6 +61,18 @@ RETRIEVAL_RERANK = os.getenv("RETRIEVAL_RERANK", "off")
 # 消融发现 N=8 对宽泛题（如 Q5「有哪些安排」）会截掉埋在补块里的关键句，
 # N=16 时 Q3/Q5 关键句命中恢复 3/3、4/4（重排只排序不牺牲召回）
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "16"))
+# 召回自检开关：on 时检索后走 LangGraph 自检图（判定不充分→改写 query 重检，
+# 主题不符→拒答），补上"本校但库里没有"这类题的低置信度拒答 | off（默认，行为同改造前）
+RECALL_GUARD = os.getenv("RECALL_GUARD", "off")
+# 自检图允许的检索轮数：1 = 不重检（首次就判定），2 = 允许一次改写重检（环跑一圈）。
+# 默认 1（环关）——这是消融的结论（`eval_guard_probe.py`，硬负例 6 题 + 无关题 4 题 + 正例 5 题）：
+# 在干净负例上环开环关打平（都 6/6 拒答、4/4 拒无关题），环**没带来任何收益**；
+# 但在灰区题上环有害——「招生办咨询电话」环关正确拒答，环开翻成放行（两次独立运行复现）。
+# 机理：判官第二轮**不记得自己已经判过不充分**，改写重检后对着同样无关的新片段重新判，
+# 翻成了 sufficient——环把一次正确的拒答变成了放行。无收益 + 有反效果 → 默认不开。
+# 环的代码保留且可开关（消融要能复跑）。样本只有十几题，结论强度有限；
+# 将来若要重开环，先让判官带上「上一轮已判不充分」的上下文，再重跑消融。
+RECALL_GUARD_MAX_ATTEMPTS = int(os.getenv("RECALL_GUARD_MAX_ATTEMPTS", "1"))
 # 知识库主体院校：用于识别「问别的学校」的库外题，避免张冠李戴幻觉（如 Q6 河北工学院）
 KB_SUBJECT_SCHOOL = os.getenv("KB_SUBJECT_SCHOOL", "河南工学院")
 # Agent 循环上限：工具结果已完整返回（800 字覆盖整个块），单题 1~2 轮即可回答。
@@ -78,7 +92,12 @@ def get_active_params() -> str:
     分块参数（CHUNK_SIZE/CHUNK_OVERLAP）在重建阶段，运行时读不到，
     需靠 .env 的 EXPERIMENT_TAG 手动标注。
     """
-    return f"model={MODEL_NAME} | temperature={TEMPERATURE} | max_tokens={MAX_TOKENS} | top_k={TOP_K} | retrieval_mode={RETRIEVAL_MODE} | rerank={RETRIEVAL_RERANK}"
+    return (
+        f"model={MODEL_NAME} | temperature={TEMPERATURE} | max_tokens={MAX_TOKENS} | "
+        f"top_k={TOP_K} | retrieval_mode={RETRIEVAL_MODE} | rerank={RETRIEVAL_RERANK} | "
+        f"recall_guard={RECALL_GUARD}"
+        + (f"(attempts={RECALL_GUARD_MAX_ATTEMPTS})" if RECALL_GUARD == "on" else "")
+    )
 
 # ═══════════════════════════════════════════════════════
 # System Prompt
@@ -220,17 +239,23 @@ GREETING = (
 # ═══════════════════════════════════════════════════════
 
 _vector_store: VectorStore | None = None
+# 单例构建锁：检索走线程池（AgentLoop 与 MCP 是同进程两条线程），
+# 并发首访会同时通过 None 检查各建一份（Chroma 持久化客户端重复打开）。
+# 照 src/hybrid_retriever.py:114 的 _bm25_build_lock 做双检锁。
+_vector_store_lock = threading.Lock()
 
 
 def _get_vector_store() -> VectorStore:
     global _vector_store
     if _vector_store is None:
-        _vector_store = VectorStore(
-            db_path=str(_PROJECT_ROOT / "chroma_db"),
-            collection_name="my_rag_collection",
-            distance_threshold=0.85,
-        )
-        logger.info("VectorStore 初始化完成")
+        with _vector_store_lock:
+            if _vector_store is None:
+                _vector_store = VectorStore(
+                    db_path=str(_PROJECT_ROOT / "chroma_db"),
+                    collection_name="my_rag_collection",
+                    distance_threshold=0.85,
+                )
+                logger.info("VectorStore 初始化完成")
     return _vector_store
 
 
@@ -447,8 +472,13 @@ def _rare_token_exact_recall(query: str, merged: list[dict], vs) -> list[dict]:
     return merged
 
 
-def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
-    """混合检索：库外校验 → 年份过滤 → 向量+BM25 融合召回 → 去重 → 补块 → 可选重排。
+def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
+    """混合检索前半段：库外校验 → 年份过滤 → 向量+BM25 融合召回 → 去重 → 补块 → 可选重排。
+
+    返回**信封**而不是纯候选列表。原因：这一段有三个非正常出口（库外拒答 /
+    检索失败 / 未找到），装不进 list[dict]；埋点耗时也要一并带出。信封结构：
+      {"candidates": list[dict], "short_circuit": str | None, "timings": dict}
+    short_circuit 非 None 时，调用方应直接把它当检索结果返回，忽略 candidates。
 
     各环节解决什么问题：
     - 库外主体校验：问别校直接拒答（防张冠李戴）
@@ -468,7 +498,7 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
     refuse = _refuse_out_of_kb_school(query)
     if refuse:
         logger.info("检索拒绝（库外主体）: %r", query)
-        return refuse
+        return {"candidates": [], "short_circuit": refuse, "timings": {}}
     vs = _get_vector_store()
     t_vec = t_bm25 = t_mix = t_rr = t_ctx = None  # 各检索阶段时间戳（埋点；None = 该阶段未执行）
 
@@ -489,7 +519,7 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
         t_vec = time.perf_counter()
     except Exception as e:
         logger.error("检索失败: %s", e)
-        return f"检索失败: {e}"
+        return {"candidates": [], "short_circuit": f"检索失败: {e}", "timings": {}}
 
     results = vector_results
     if RETRIEVAL_MODE == "hybrid":
@@ -522,7 +552,7 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
         except Exception as e:
             logger.error("年份回退检索失败: %s", e)
     if not results:
-        return "知识库中未找到相关内容。"
+        return {"candidates": [], "short_circuit": "知识库中未找到相关内容。", "timings": {}}
 
     # 3. 按文本内容去重（同一通知被爬进两个分类目录 + 重叠窗口会产生内容相同的块）
     merged = []
@@ -589,8 +619,34 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
         except Exception as e:
             logger.error("重排失败，保留原顺序: %s", e)
 
+    # ── 检索明细日志（配合 request_id 排查：各段耗时 + 命中块数）──
+    t_total = time.perf_counter()
+    ctx_start = t_mix if t_mix is not None else t_vec  # 补块段起点：hybrid 从融合后计，纯向量从召回后计
+    timings = {
+        "vector": _ms(t0, t_vec),
+        "bm25": _ms(t_vec, t_bm25),
+        "fuse": _ms(t_bm25, t_mix),
+        "complement": _ms(ctx_start, t_ctx),
+        "rerank": _ms(t_ctx, t_rr),
+    }
+    logger.info(
+        "检索明细 query=%r mode=%s 向量=%sms BM25=%sms 融合=%sms 补块=%sms 重排=%sms 总=%dms 命中=%d块",
+        query[:60], RETRIEVAL_MODE,
+        timings["vector"], timings["bm25"], timings["fuse"],
+        timings["complement"], timings["rerank"],
+        int((t_total - t0) * 1000), len(merged[:cap]),
+    )
+    return {"candidates": merged[:cap], "short_circuit": None, "timings": timings}
+
+
+def _format_context(candidates: list[dict]) -> str:
+    """把候选块格式化成给 LLM 读的检索文本。
+
+    格式与 _parse_sources（下方）的严格正则逐字耦合——多一个空格，
+    前端「参考来源」卡片就会解析成空。改这里务必同步核对 _parse_sources。
+    """
     lines = []
-    for i, doc in enumerate(merged[:cap], 1):
+    for i, doc in enumerate(candidates, 1):
         # 截断到 800 字：块默认 500 字，前 200 字会漏掉后半块的关键数字，
         # 导致 LLM 反复换说法搜索却拿不到答案，轮数耗尽报"处理超时"。
         text = doc.get("text", "")[:800]
@@ -618,18 +674,77 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
             f"   原文链接: {source_url}\n"
             f"   片段: {text}..."
         )
-
-    # ── 检索明细日志（配合 request_id 排查：各段耗时 + 命中块数）──
-    t_total = time.perf_counter()
-    ctx_start = t_mix if t_mix is not None else t_vec  # 补块段起点：hybrid 从融合后计，纯向量从召回后计
-    logger.info(
-        "检索明细 query=%r mode=%s 向量=%sms BM25=%sms 融合=%sms 补块=%sms 重排=%sms 总=%dms 命中=%d块",
-        query[:60], RETRIEVAL_MODE,
-        _ms(t0, t_vec), _ms(t_vec, t_bm25), _ms(t_bm25, t_mix),
-        _ms(ctx_start, t_ctx), _ms(t_ctx, t_rr),
-        int((t_total - t0) * 1000), len(merged[:cap]),
-    )
     return "\n\n".join(lines)
+
+
+def _search_plain(query: str, top_k: int = TOP_K) -> str:
+    """检索 + 格式化，不做召回自检（= 改造前的原行为）。"""
+    env = _retrieve_candidates(query, top_k)
+    if env["short_circuit"]:
+        return env["short_circuit"]
+    return _format_context(env["candidates"])
+
+
+# ── 召回自检图单例（懒构建；构建锁防并发双建，与 VectorStore 单例同理）──
+_recall_graph = None
+_recall_graph_lock = threading.Lock()
+
+
+def _get_recall_graph():
+    global _recall_graph
+    if _recall_graph is None:
+        with _recall_graph_lock:
+            if _recall_graph is None:
+                from src.recall_guard import build_recall_graph
+
+                _recall_graph = build_recall_graph(
+                    retrieve_fn=_retrieve_candidates,
+                    format_fn=_format_context,
+                    llm_fn=_call_llm,
+                    api_key=API_KEY,
+                )
+                logger.info("召回自检图构建完成（max_attempts=%d）", RECALL_GUARD_MAX_ATTEMPTS)
+    return _recall_graph
+
+
+async def _search_knowledge_base_async(query: str, top_k: int = TOP_K) -> str:
+    """检索 + 召回自检（异步真实实现）。RECALL_GUARD=off 时等价于原路径。"""
+    if RECALL_GUARD != "on":
+        return _search_plain(query, top_k)
+    from src.recall_guard import run_recall_guard
+
+    return await run_recall_guard(_get_recall_graph(), query, top_k, RECALL_GUARD_MAX_ATTEMPTS)
+
+
+def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
+    """混合检索（公开同步 API）—— AgentLoop 的工具与 MCP 都调这里。
+
+    RECALL_GUARD=on 时走 LangGraph 召回自检图（判定不充分会改写 query 重检、
+    主题不符会拒答）；off 时是原样的"检索直接格式化"。
+    """
+    if RECALL_GUARD != "on":
+        return _search_plain(query, top_k)
+
+    # 图的节点是 async（判官要 await _call_llm），这里从同步 API 桥过去。
+    # 两个调用方（AgentLoop / MCP server）都在 asyncio.to_thread 里，工作线程内
+    # 没有 running loop，asyncio.run 是安全的；但仍探测一次兜住"将来有人直接在
+    # async 上下文里调它"的情况。不用 nest_asyncio——它会全局 patch asyncio 且
+    # 仍是在当前 loop 里同步阻塞，后果一样却多一份全局状态污染。
+    #
+    # 整体 try/except 是必须的：AgentLoop 调工具那行（await asyncio.to_thread(
+    # execute_tool, ...)）外面没有错误边界，图里任何异常抛出去都会打断整条 SSE 流。
+    try:
+        coro = _search_knowledge_base_async(query, top_k)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        logger.warning("检测到 running loop，召回自检降级到新线程执行（会阻塞当前事件循环数秒）")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(asyncio.run, coro).result()
+    except Exception:
+        logger.exception("召回自检图执行失败，降级为无自检检索")
+        return _search_plain(query, top_k)
 
 
 def _get_current_time() -> str:
@@ -781,11 +896,26 @@ def _parse_sources(result_text: str) -> list[dict]:
 # LLM 调用（Anthropic-compatible，支持 Tool Use）
 # ═══════════════════════════════════════════════════════
 
-async def _call_llm(messages: list[dict], api_key: str, on_delta=None) -> dict:
+async def _call_llm(
+    messages: list[dict],
+    api_key: str,
+    on_delta=None,
+    *,
+    system: str | None = None,
+    tools: list[dict] | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> dict:
     """调用 Anthropic-compatible API，返回 {text, tool_uses, stop_reason}。
 
     on_delta 传入时启用流式（payload 加 stream: True）：每个 text_delta 实时回调一次，
     供 SSE 边生成边出字；不传则一次性等全量响应（同旧行为）。
+
+    system / tools / max_tokens / temperature 是给"非主循环调用方"（如召回自检的判官
+    LLM）留的覆盖口，**默认值全部保持主循环原状**，不传就与改动前完全一致：
+    - system=None → SYSTEM_PROMPT
+    - tools=None  → TOOL_DEFINITIONS；传 [] 则整个 tools 字段不下发（判官不需要工具）
+    - max_tokens / temperature = None → .env 的 MAX_TOKENS / TEMPERATURE
 
     重试策略：网络错误 / HTTP 5xx / 请求阶段超时 在发起后重试（最多 LLM_MAX_RETRIES 次）。
     流式中途断开不重试（可能已向客户端吐出部分文本，重发会造成重复），
@@ -802,17 +932,19 @@ async def _call_llm(messages: list[dict], api_key: str, on_delta=None) -> dict:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        _tools = TOOL_DEFINITIONS if tools is None else tools
         payload = {
             "model": MODEL_NAME,
-            "max_tokens": MAX_TOKENS,
-            "temperature": TEMPERATURE,
-            "system": SYSTEM_PROMPT,
+            "max_tokens": max_tokens if max_tokens is not None else MAX_TOKENS,
+            "temperature": temperature if temperature is not None else TEMPERATURE,
+            "system": system if system is not None else SYSTEM_PROMPT,
             "messages": messages,
-            "tools": TOOL_DEFINITIONS,
             # 禁用思考模式：deepseek 默认返回 thinking 块，工具调用后回传 assistant
             # 必须原样带 thinking+signature，否则报 400。RAG 查询场景无需思考链，直接禁用
             "thinking": {"type": "disabled"},
         }
+        if _tools:  # tools=[] 的调用方（判官）不传该字段，避免下发空数组
+            payload["tools"] = _tools
         if on_delta is not None:
             payload["stream"] = True
 
@@ -1148,7 +1280,14 @@ class AgentLoop:
                             tool=name, success=True,
                             output=result_text, sources=ev_sources,
                         )
-                        add_step(f"📋 检索到 {len(ev_sources)} 条相关结果")
+                        # 召回自检拒答：必须在"检索到 N 条"判定之前，否则会出现
+                        # "检索到 0 条" + "自检未通过" 两个自相矛盾的步骤。
+                        # 前缀用具体的「【召回自检」而不是宽泛的「【」——后者会把
+                        # 库外闸门的「【库外题拦截】」也误标成自检未通过。
+                        if result_text.startswith("【召回自检"):
+                            add_step("🛡️ 召回自检未通过，已拒答")
+                        else:
+                            add_step(f"📋 检索到 {len(ev_sources)} 条相关结果")
                     else:
                         yield ToolResultEvent(
                             tool=name, success=True,

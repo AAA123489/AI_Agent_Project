@@ -21,7 +21,8 @@ AI_Agent_Project/
 |------|------|
 | 文档解析 | TXT / Markdown / PDF |
 | 智能分块 | 自研递归切分器（中文标点分隔 + 重叠窗口） |
-| 向量检索 | ChromaDB + 余弦相似度 + distance_threshold 阈值 |
+| 混合检索 | ChromaDB 向量 + BM25 关键词，RRF 融合，可选 CrossEncoder 重排 |
+| 召回自检 | LangGraph 状态机：判定召回能否支撑回答，不能则**拒答**而非编造 |
 | 流式对话 | SSE（Server-Sent Events）流式推送 |
 | 多轮记忆 | Redis LPUSH + EXPIRE 30 分钟过期 |
 | MCP 工具 | 3 个工具暴露给外部 Agent 调用 |
@@ -35,17 +36,20 @@ AI_Agent_Project/
 **运行参数**（在 `.env`，改配置不用改代码）：
 - `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
 - `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）、`RETRIEVAL_RERANK=off`（重排默认关，遇表格行值题可临时开，代价每问 +1.9s）
+- `RECALL_GUARD=off`（召回自检默认关，关掉即改造前行为）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环）
 
-**命中率成绩单**（6 题基准可复跑：`rag_chat/eval_baseline.py` + `eval_score.py`）：
+**评测成绩单**：
 
-| 评测 | 命中率 |
-|------|--------|
+| 评测 | 结果 |
+|------|------|
 | 6 题基准（60 分制，2026-09-16 复跑） | **60/60** |
+| 召回自检探测（硬负例 6 / 无关题 4 / 正例 5） | 自检 **off**：负例 0/6 拒答；**on**：负例 **6/6**、无关 **4/4**、正例 **5/5** 零误拒 |
 | 25 题随机 | **96%** |
 | 50 题随机 | **100%** |
 | 100 题随机（回归后） | **95%** |
 
-> 6 题基准复跑：`cd rag_chat && python eval_baseline.py --tag topk8 && python eval_score.py eval_results_baseline_topk8.json`
+> ⚠️ **60/60 有 ±10 分采样噪声**：2026-09-17 用同一份代码跑两遍得到 60/60 与 50/60（Q6 要过两级 LLM，LLM 某次把工具参数里的校名丢了 → 闸门没拦 → 回答如实列了真数字 → 评分判幻觉）。**衡量检索层改动请用 `eval_guard_probe.py`（检索层、确定性），不要用 60/60。**
+> 复跑：`cd rag_chat && python eval_baseline.py --tag topk8 && python eval_score.py eval_results_baseline_topk8.json`
 > 25/50/100 题那三套的题库与脚本从未入库、已彻底丢失，无法复跑（成绩仅存于表内）。
 > 详细评测过程与改造历史见 [rag_chat/docs/改进记录.md](rag_chat/docs/改进记录.md)。
 

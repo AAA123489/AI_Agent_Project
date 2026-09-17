@@ -5,6 +5,7 @@
 [![Chroma](https://img.shields.io/badge/Chroma-vector--db-FF6B6B?style=flat&logo=chromadb&logoColor=white)](https://www.trychroma.com/)
 [![Redis](https://img.shields.io/badge/Redis-cache-DC382D?style=flat&logo=redis&logoColor=white)](https://redis.io/)
 [![MCP](https://img.shields.io/badge/MCP-protocol-6E3FF3?style=flat&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=flat&logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
 基于 FastAPI + ChromaDB + DeepSeek 的 RAG 智能问答系统：爬取河南工学院官网公开信息 → 隐私脱敏 → 切分入库 → SSE 流式问答，支持 MCP 工具暴露。附带消融实验工具，可调参对比检索效果。
@@ -19,6 +20,7 @@
 | 🔒 隐私脱敏 | 删除个人手机号 / 邮箱，保留办公室座机（`sanitize_privacy`） |
 | ✂️ 智能分块 | 自研递归切分器（段落→句子→空格），重叠窗口，参数可调 |
 | 🔢 向量检索 | ChromaDB 余弦相似度检索，按文件名 + 年份 + 原文链接标注来源 |
+| 🛡️ 召回自检 | LangGraph 状态机：判定召回是否支撑回答，不支撑则**拒答**而非编造（`src/recall_guard.py`） |
 | 💬 SSE 流式对话 | Agent 循环 + 工具调用，答案附 📎 参考来源（日期·文件名·🔗查看原文） |
 | 🧠 多轮记忆 | Redis 短期记忆（可选），静默降级为前端会话历史 |
 | 🧪 消融实验 | `crawl_ablation.py` 按量爬取 + `rebuild_kb.py` 参数化重建 |
@@ -29,6 +31,7 @@
 - **Web 框架**：FastAPI + Uvicorn（ASGI），SSE 流式
 - **爬虫**：aiohttp + BeautifulSoup + lxml
 - **向量库**：ChromaDB（本地持久化，paraphrase-multilingual-MiniLM-L12-v2 中文 Embedding）
+- **编排**：LangGraph（召回自检状态机，条件边 + 改写重检环）
 - **LLM**：DeepSeek（Anthropic 兼容 Tool Use 格式）
 - **记忆**：Redis（可选，LPUSH + EXPIRE 30 分钟）
 - **前端**：原生 HTML/CSS/JS，`static/chat.html`
@@ -42,6 +45,7 @@ rag_chat/
 ├── redis_client.py         # Redis 短期记忆（可选）
 ├── src/
 │   ├── vector_store.py     # Chroma 向量库封装（增删查、相似度检索）
+│   ├── recall_guard.py     # 召回自检 LangGraph 状态机（条件边 + 改写重检环）
 │   ├── config.py           # .env 配置管理
 │   └── logger.py           # 日志配置
 ├── campus_scraper/         # 爬虫包
@@ -56,6 +60,9 @@ rag_chat/
 ├── rag_pipeline.py         # 单文档入库流水线
 ├── crawl_ablation.py       # 消融实验：按分类 + 条数爬取并脱敏落盘
 ├── rebuild_kb.py           # 消融实验：从 scraped_docs 按参数重建知识库
+├── eval_baseline.py        # 评测：6 题基准真实链路（检索 + LLM）
+├── eval_score.py           # 评测：60 分制打分器
+├── eval_guard_probe.py     # 评测：召回自检能力探测（硬负例 / 无关题 / 正例）
 ├── mcp_server/             # MCP 协议服务（暴露给外部 Agent）
 ├── static/chat.html        # 聊天前端（SSE 流式 + 参考来源卡片）
 ├── tests/                  # pytest 测试
@@ -195,6 +202,44 @@ python app_fastapi.py
 - **top_k 与块大小强耦合**：小块需要多取补全信息，top_k=8 是 300 字块的甜点
 - **温度 0.3 为甜点**：0.1~0.4 区间内 0.3 是峰值（46），两端回落（0.4=36 / 0.2=30 / 0.1=28），1.0 全开随机性在数字题上崩盘（12 分）——数字型测试题对高温极敏感，要求精确数值时务必用低温
 
+## 召回自检（LangGraph）
+
+检索不是「捞回 top_k 个块」就完事——**本校但没有的问题**（如「河南工学院食堂几点开门」）会捞回一堆无关块，LLM 拿到就会编。这一层判定「召回的片段到底能不能支撑回答」，不能就拒答。
+
+状态机（`src/recall_guard.py`）：
+
+```
+START → retrieve → grade ─┬─(sufficient)──────────────────→ format → END
+                          ├─(insufficient 且 attempt<max)──→ retrieve（环，attempt+1）
+                          └─(off_topic 或 attempt>=max)────→ refuse → END
+```
+
+`grade` 两段式：**向量距离 ≤0.30 直接放行**（不调判官，基线题基本免检），其余交 LLM 判官给 `VERDICT: sufficient|insufficient|off_topic`。解析失败 / 判官异常**一律放行**——宁可少拒答，不可误拒答，更不可打断 SSE 流。
+
+**开关**（`.env`，默认关，关掉即改造前行为）：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `RECALL_GUARD` | `off` | `on` 启用自检图 |
+| `RECALL_GUARD_MAX_ATTEMPTS` | `1` | 检索轮数。`1`=不重检，`2`=允许一次改写重检（环跑一圈） |
+
+**效果**（`eval_guard_probe.py`，硬负例 6 + 无关题 4 + 正例 5）：
+
+| 配置 | 硬负例拒答 | 无关题拒答 | 正例放行 | 耗时（负例/正例） |
+|---|---|---|---|---|
+| `RECALL_GUARD=off` | **0/6** | 0/4 | 5/5 | 0.26s / 0.27s |
+| `RECALL_GUARD=on` | **6/6** | 4/4 | 5/5 | 1.04s / 0.45s |
+
+```bash
+RECALL_GUARD=on python eval_guard_probe.py --tag guard_on      # 探测：硬负例 + 无关 + 正例
+RECALL_GUARD=on python eval_guard_probe.py --answers           # 额外跑完整 AgentLoop，看最终回答
+RECALL_GUARD=on RECALL_GUARD_MAX_ATTEMPTS=2 python eval_guard_probe.py --tag ring_on  # 消融：环开
+```
+
+**环默认关**是消融的结论，不是省事：干净负例上环开环关打平（环没收益），但在灰区题「招生办咨询电话」上环开会把一次正确的拒答翻成放行（两次独立运行复现）——判官第二轮不记得自己已判过不充分，对着同样无关的新片段重新判就成了 sufficient。代码保留可开关。详见 [docs/改进记录.md](docs/改进记录.md) 第 15 条。
+
+**已知边界**：判官判的是**相关性**而非**可答性**，所以「主题词在库、具体事实不在库」的灰区题（如「现任校长是谁」，库里只有外单位领导的人名）会被放行。
+
 ## 评测
 
 6 题基准（60 分制）可复跑，两个脚本：
@@ -213,6 +258,8 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 - 基准事实表与评分规则内嵌在 `eval_score.py` 的 `FACT_TABLE` / `SCORING_PROMPT`，改题或改真值只动这一处
 - 最近一次复跑：2026-09-16，hybrid / top_k=8 / rerank=off → **60/60**（第 6 题库外题正确拒答）
 
+> ⚠️ **60/60 是单次采样，不是稳定性质。** 2026-09-17 用**同一份代码**跑了两遍，得到 **60/60 与 50/60**。根因是这道题要过**两级 LLM**（回答 + 打分）：某次 LLM 把工具参数写成 `query='招生录取分数'`——**丢了校名**，库外闸门没东西可拦，返回的河南工学院分数被如实列进回答，评分 LLM 按「含基准表外数字即判幻觉」判 0。检索层两次完全一致，差别只在模型最后那段回答要不要多嘴抄数字。**要衡量检索层改动（如召回自检），用上面的 `eval_guard_probe.py`（检索层、确定性），不要用 60/60。**
+
 > 25/50/100 题那三套随机评测的题库与脚本从未入库，已丢失、无法复跑。
 
 ## MCP 工具
@@ -222,7 +269,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ -v      # 96 条（含 test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合，均零网络）
 ```
 
 ## 许可证
