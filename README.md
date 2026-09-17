@@ -2,7 +2,7 @@
 
 三个递进式的 AI Agent 实践项目：从**底层手写 Agent 循环** → **RAG 知识库问答** → **LangGraph 多 Agent 编排**，覆盖 Agent 开发的完整能力链路。
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Tests](https://img.shields.io/badge/tests-106%20passed-brightgreen) ![RAG命中率](https://img.shields.io/badge/检索命中率-95%25%2B-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Tests](https://img.shields.io/badge/tests-118%20passed-brightgreen) ![RAG命中率](https://img.shields.io/badge/检索命中率-95%25%2B-brightgreen)
 
 ```
 项目一（RAG 知识库）
@@ -19,7 +19,7 @@
 
 | 项目 | 定位 | 技术栈 | 测试 | 状态 |
 |------|------|--------|------|------|
-| **项目一** | RAG 知识库问答系统 | FastAPI · ChromaDB · DeepSeek · Redis · SSE · LangGraph | 106 条 | ✅ 完成（本仓库） |
+| **项目一** | RAG 知识库问答系统 | FastAPI · ChromaDB · DeepSeek · Redis · SSE · LangGraph | 118 条 | ✅ 完成（本仓库） |
 | **项目二** | 手写 Agent 工作流引擎（事件驱动） | Python · asyncio · SSE · MCP | 22 条 | ✅ 完成（独立仓库） |
 | **项目三** | LangGraph 多 Agent 编排引擎 | LangGraph · DeepSeek · ChromaDB · Redis | 38 条 | ✅ 完成（独立仓库） |
 
@@ -74,7 +74,7 @@ AI_Agent_Project/
 ```bash
 cd rag_chat
 python app_fastapi.py      # http://localhost:8000
-python -m pytest tests/ -v # 106 条用例
+python -m pytest tests/ -v # 118 条用例
 ```
 
 📖 详细文档见 [rag_chat/README.md](rag_chat/README.md)

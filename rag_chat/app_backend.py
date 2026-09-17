@@ -784,6 +784,26 @@ def _calculate(expression: str) -> str:
         return f"❌ 计算错误: {e}"
 
 
+def _guard_tool_call(name: str, user_question: str) -> str | None:
+    """工具调用前的**库外主体二次校验**，用用户原话。返回拒答文案，或 None 放行。
+
+    检索层自己那道闸门（`_retrieve_candidates` 里的 `_refuse_out_of_kb_school`）
+    只看得到**工具参数**，而那是 LLM 改写过的：问「河北工学院的录取分数线」时
+    LLM 可能把参数写成 `query='招生录取分数'`——**校名被改写掉了**，闸门没东西可拦，
+    于是本校（河南工学院）的分数被如实列进回答，评分按「含基准表外数字即判幻觉」给 0。
+    实测同一份代码跑两遍得到 60/60 与 50/60，差别就在这一次改写。所以这里用
+    **用户原话**再拦一次 —— 它才是「问的是不是外校」的权威依据。
+
+    只对 search_knowledge_base 生效：时间/计算/天气与知识库主体无关。
+
+    不会误伤混合问句：`_refuse_out_of_kb_school` 只要在 query 里看到主体校名就早退放行，
+    所以「河南工学院和河北工学院哪个好」照常放行。
+    """
+    if name != "search_knowledge_base":
+        return None
+    return _refuse_out_of_kb_school(user_question or "")
+
+
 def execute_tool(name: str, input_: dict) -> str:
     if name == "search_knowledge_base":
         return _search_knowledge_base(**input_)
@@ -1283,7 +1303,12 @@ class AgentLoop:
 
                     # 同步阻塞的工具执行（ChromaDB 查询 / BM25 打分 / weather 请求）
                     # 丢线程池执行，避免卡住事件循环（多人并发问答互不阻塞）
-                    result_text = await asyncio.to_thread(execute_tool, name, inp)
+                    # 先过库外主体二次校验（用户原话）——命中就不必跑检索了
+                    blocked = _guard_tool_call(name, message)
+                    result_text = (
+                        blocked if blocked
+                        else await asyncio.to_thread(execute_tool, name, inp)
+                    )
 
                     if name == "search_knowledge_base":
                         ev_sources = _parse_sources(result_text)
@@ -1292,20 +1317,24 @@ class AgentLoop:
                             tool=name, success=True,
                             output=result_text, sources=ev_sources,
                         )
-                        # 召回自检拒答：必须在"检索到 N 条"判定之前，否则会出现
-                        # "检索到 0 条" + "自检未通过" 两个自相矛盾的步骤。
-                        # 前缀用具体的「【召回自检」而不是宽泛的「【」——后者会把
-                        # 库外闸门的「【库外题拦截】」也误标成自检未通过。
+                        # 两种拒答都要在"检索到 N 条"判定之前，否则会出现
+                        # "检索到 0 条" + "已拒答" 两个自相矛盾的步骤。
+                        # 前缀必须具体：宽泛的「【」会把库外拦截误标成自检未通过。
+                        # 必须 yield ThinkingEvent——只 add_step 的话它只进 thinking_steps
+                        # 列表（最后才随 DoneEvent 一次性下发），流式过程中客户端看不到，
+                        # 于是"这一步到底走没走"在实时日志和评测回放里都查不出来。
                         if result_text.startswith("【召回自检"):
-                            add_step("🛡️ 召回自检未通过，已拒答")
+                            yield ThinkingEvent(step=add_step("🛡️ 召回自检未通过，已拒答"))
+                        elif result_text.startswith("【库外题拦截"):
+                            yield ThinkingEvent(step=add_step("🚫 库外题拦截，已拒答"))
                         else:
-                            add_step(f"📋 检索到 {len(ev_sources)} 条相关结果")
+                            yield ThinkingEvent(step=add_step(f"📋 检索到 {len(ev_sources)} 条相关结果"))
                     else:
                         yield ToolResultEvent(
                             tool=name, success=True,
                             output=result_text, sources=None,
                         )
-                        add_step(f"📋 返回: {result_text[:120]}")
+                        yield ThinkingEvent(step=add_step(f"📋 返回: {result_text[:120]}"))
 
                     messages.append({
                         "role": "assistant",
@@ -1404,11 +1433,18 @@ async def run_agent(message: str, history: list[dict], api_key: str):
                     add_step(f"🔧 调用工具: `{name}({json.dumps(inp, ensure_ascii=False)})`")
                     yield [], sources, list(thinking_steps)
 
-                    result_text = execute_tool(name, inp)
+                    # 库外主体二次校验（用户原话），命中就不跑检索
+                    blocked = _guard_tool_call(name, message)
+                    result_text = blocked if blocked else execute_tool(name, inp)
 
                     if name == "search_knowledge_base":
                         sources = _parse_sources(result_text)
-                        add_step(f"📋 检索到 {len(sources)} 条相关结果")
+                        if result_text.startswith("【召回自检"):
+                            add_step("🛡️ 召回自检未通过，已拒答")
+                        elif result_text.startswith("【库外题拦截"):
+                            add_step("🚫 库外题拦截，已拒答")
+                        else:
+                            add_step(f"📋 检索到 {len(sources)} 条相关结果")
                     else:
                         add_step(f"📋 返回: {result_text[:120]}")
 

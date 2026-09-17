@@ -266,7 +266,8 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 - 基准事实表与评分规则内嵌在 `eval_score.py` 的 `FACT_TABLE` / `SCORING_PROMPT`，改题或改真值只动这一处
 - 最近一次复跑：2026-09-16，hybrid / top_k=8 / rerank=off → **60/60**（第 6 题库外题正确拒答）
 
-> ⚠️ **60/60 是单次采样，不是稳定性质。** 2026-09-17 用**同一份代码**跑了两遍，得到 **60/60 与 50/60**。根因是这道题要过**两级 LLM**（回答 + 打分）：某次 LLM 把工具参数写成 `query='招生录取分数'`——**丢了校名**，库外闸门没东西可拦，返回的河南工学院分数被如实列进回答，评分 LLM 按「含基准表外数字即判幻觉」判 0。检索层两次完全一致，差别只在模型最后那段回答要不要多嘴抄数字。**要衡量检索层改动（如召回自检），用上面的 `eval_guard_probe.py`（检索层、确定性），不要用 60/60。**
+> ⚠️ **60/60 是单次采样，不是稳定性质。** 2026-09-17 用**同一份代码**跑了两遍，得到 **60/60 与 50/60**。当时那次的根因是这道题要过**两级 LLM**（回答 + 打分）：某次 LLM 把工具参数写成 `query='招生录取分数'`——**丢了校名**，库外闸门没东西可拦，返回的河南工学院分数被如实列进回答，评分 LLM 按「含基准表外数字即判幻觉」判 0。检索层两次完全一致，差别只在模型最后那段回答要不要多嘴抄数字。
+> **这条路径已修**（`_guard_tool_call` 用**用户原话**再做一次库外主体校验，见 `docs/改进记录.md` 第 17 条），但「回答 + 打分」两级 LLM 本身仍有抖动。**要衡量检索层改动（如召回自检），用上面的 `eval_guard_probe.py`（检索层、确定性），不要用 60/60。**
 
 > 25/50/100 题那三套随机评测的题库与脚本从未入库，已丢失、无法复跑。
 
@@ -277,7 +278,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 106 条（test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化，均零网络）
+python -m pytest tests/ -v      # 118 条（test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端，均零网络）
 ```
 
 ## 许可证
