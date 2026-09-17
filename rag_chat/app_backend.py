@@ -33,6 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.vector_store import VectorStore
 from src.hybrid_retriever import rrf_fuse, get_bm25_retriever, get_reranker
+from src.stream_gate import OpeningGate
 
 load_dotenv()
 
@@ -153,6 +154,9 @@ SYSTEM_PROMPT = (
     "15. **重要**：查询具体人名/专有名词（如「张尊舒」）时，第一步直接以该名词本身作为检索词"
     "（如检索「张尊舒」），不要拼接「学院/专业/学生/获奖」等修饰词——修饰词是高频词，"
     "会把目标文档挤出检索结果。若拼接修饰词检索没拿到答案，回退用裸词再检一次。\n"
+    "16. **重要**：**调用工具前不要输出任何文字说明**——不要写「I'll search the knowledge base…」"
+    "「让我先查一下」「我将调用…」这类旁白，直接发起工具调用。工具返回后直接给最终答案，"
+    "不要复述检索过程。全流程只用中文，任何情况下都不要输出英文（代码、专有名词、URL 除外）。\n"
     "\n"
     "## 隐私保护规则（重要）\n"
     "- 用户若询问**某位具体老师/员工的个人手机号、邮箱或私人住址**，一律不提供。\n"
@@ -253,7 +257,6 @@ def _get_vector_store() -> VectorStore:
                 _vector_store = VectorStore(
                     db_path=str(_PROJECT_ROOT / "chroma_db"),
                     collection_name="my_rag_collection",
-                    distance_threshold=0.85,
                 )
                 logger.info("VectorStore 初始化完成")
     return _vector_store
@@ -1247,6 +1250,8 @@ class AgentLoop:
                     await chunk_queue.put(None)  # 哨兵：排空循环结束
 
             llm_task = asyncio.create_task(_llm_with_stream())
+            # 每轮一个闸门：扣住轮首的英文旁白（详见 src/stream_gate.py）
+            gate = OpeningGate()
             try:
                 while True:
                     chunk = await chunk_queue.get()
@@ -1254,9 +1259,16 @@ class AgentLoop:
                         break
                     if stream_error[0]:
                         continue  # 流式已失败：丢弃残留缓冲，不输出残缺片段
-                    streamed_chunks += 1
-                    yield TextEvent(content=chunk)
+                    out = gate.feed(chunk)
+                    if out:
+                        streamed_chunks += 1
+                        yield TextEvent(content=out)
                 response = await llm_task
+                # 收尾：本轮扣着没发的，有 tool_use 就是旁白（丢），没有就是纯英文回答（补发）
+                tail = gate.finish(had_tool_use=bool(response.get("tool_uses")))
+                if tail:
+                    streamed_chunks += 1
+                    yield TextEvent(content=tail)
             finally:
                 if not llm_task.done():
                     llm_task.cancel()

@@ -144,7 +144,6 @@ async def run_scrape_pipeline(
         vector_store = VectorStore(
             db_path=str(_PROJECT_ROOT / "chroma_db"),
             collection_name=COLLECTION_NAME,
-            distance_threshold=0.85,
         )
 
     errors = []
@@ -227,7 +226,6 @@ def get_knowledge_base_stats(
         vector_store = VectorStore(
             db_path=str(_PROJECT_ROOT / "chroma_db"),
             collection_name=COLLECTION_NAME,
-            distance_threshold=0.85,
         )
 
     stats = KnowledgeBaseStats()
@@ -272,7 +270,6 @@ async def ingest_uploaded_files(
         vector_store = VectorStore(
             db_path=str(_PROJECT_ROOT / "chroma_db"),
             collection_name=COLLECTION_NAME,
-            distance_threshold=0.85,
         )
 
     splitter = RecursiveTextSplitter(

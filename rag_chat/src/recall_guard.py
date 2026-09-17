@@ -4,7 +4,7 @@
 
 加这一层之前，检索链路没有任何"召回质量"概念：
 
-- `VectorStore.distance_threshold=0.85` 存了但**从未被读过**（search_similar 不引用它）
+- `VectorStore.distance_threshold=0.85` 存了但**从未被读过**（已于 2026-09-17 删除）
 - 唯一能拒答的是 `app_backend._refuse_out_of_kb_school`，而它只做**主体校校验**
   （query 里出现"河南工学院"就无条件放行），**不做主题存在性校验**
 - 检索永远返回 top_k 个块，哪怕全是无关的

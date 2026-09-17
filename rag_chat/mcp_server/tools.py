@@ -42,7 +42,6 @@ def _get_vector_store() -> VectorStore:
     if _vector_store is None:
         _vector_store = VectorStore(
             collection_name="my_rag_collection",
-            distance_threshold=0.85,
         )
         logger.info("VectorStore 单例初始化完成（Embedding 模型已加载）")
     return _vector_store

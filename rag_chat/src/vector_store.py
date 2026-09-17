@@ -27,8 +27,13 @@ def _get_embedding_fn():
 
 
 class VectorStore:
-    def __init__(self, db_path="./chroma_db", collection_name="ai_knowledge_base", distance_threshold: float = 0.85):
-        self.distance_threshold = distance_threshold
+    def __init__(self, db_path="./chroma_db", collection_name="ai_knowledge_base"):
+        # 这里曾有 distance_threshold=0.85 参数，2026-09-17 删除：它只在 __init__ 里
+        # 赋了个属性，search_similar 从不引用，5 个调用点却都煞有介事地传了 0.85，
+        # 读代码的人会以为相似度阈值在生效。实测线上库的余弦距离全距是 0.14~0.61，
+        # 0.85 永远不可能触发——它从来就没管过事。
+        # 「召回够不够格回答」现在由 src/recall_guard.py 判定（PASS_DIST=0.30），
+        # 它用的是向量路原始距离（融合后的 distance 被 BM25 归一化分污染过）。
         self.client = chromadb.PersistentClient(path=db_path)
 
         self.collection = self.client.get_or_create_collection(

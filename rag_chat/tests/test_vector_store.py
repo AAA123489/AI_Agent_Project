@@ -50,7 +50,6 @@ class TestInit:
     def test_default_values(self, temp_db):
         """默认参数应正确设置"""
         assert temp_db.collection.name == "test_collection"
-        assert temp_db.distance_threshold == 0.85
 
     def test_collection_is_persistent(self, temp_db):
         """collection 应在创建后可立即查询"""
@@ -62,12 +61,12 @@ class TestInit:
         temp_db.save_document("第一条文档")
         # 不应抛异常
 
-    def test_custom_distance_threshold(self):
-        """distance_threshold 可自定义"""
+    def test_custom_collection_name(self):
+        """collection_name 可自定义"""
         tmpdir = tempfile.mkdtemp()
         try:
-            store = VectorStore(db_path=tmpdir, distance_threshold=0.5)
-            assert store.distance_threshold == 0.5
+            store = VectorStore(db_path=tmpdir, collection_name="custom_collection")
+            assert store.collection.name == "custom_collection"
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

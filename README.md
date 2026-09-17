@@ -2,7 +2,7 @@
 
 三个递进式的 AI Agent 实践项目：从**底层手写 Agent 循环** → **RAG 知识库问答** → **LangGraph 多 Agent 编排**，覆盖 Agent 开发的完整能力链路。
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Tests](https://img.shields.io/badge/tests-93%20passed-brightgreen) ![RAG命中率](https://img.shields.io/badge/检索命中率-95%25%2B-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Tests](https://img.shields.io/badge/tests-106%20passed-brightgreen) ![RAG命中率](https://img.shields.io/badge/检索命中率-95%25%2B-brightgreen)
 
 ```
 项目一（RAG 知识库）
@@ -19,16 +19,18 @@
 
 | 项目 | 定位 | 技术栈 | 测试 | 状态 |
 |------|------|--------|------|------|
-| **项目一** | RAG 知识库问答系统 | FastAPI · ChromaDB · DeepSeek · Redis · SSE | 57 条 | ✅ 完成 |
+| **项目一** | RAG 知识库问答系统 | FastAPI · ChromaDB · DeepSeek · Redis · SSE · LangGraph | 106 条 | ✅ 完成（本仓库） |
 | **项目二** | 手写 Agent 工作流引擎（事件驱动） | Python · asyncio · SSE · MCP | 22 条 | ✅ 完成（独立仓库） |
-| **项目三** | LangGraph 多 Agent 编排引擎 | LangGraph · DeepSeek · ChromaDB · Redis | 38 条 | ✅ 完成 |
+| **项目三** | LangGraph 多 Agent 编排引擎 | LangGraph · DeepSeek · ChromaDB · Redis | 38 条 | ✅ 完成（独立仓库） |
+
+> 本仓库当前只包含**项目一**。项目二、项目三已移出，各自维护在独立仓库中；
+> 下面保留它们的架构说明作为索引，但运行命令不在本仓库内。
 
 ## 项目结构
 
 ```
 AI_Agent_Project/
 ├── rag_chat/          # 项目一：RAG 知识库问答系统
-├── langgraph_agent/   # 项目三：LangGraph 多 Agent 编排引擎
 └── README.md
 ```
 
@@ -47,6 +49,7 @@ AI_Agent_Project/
 | 混合检索 | 向量 + BM25 双路召回 + RRF 融合，长尾召回 2/3 字 n-gram + 精确匹配兜底 |
 | 可选重排 | `bge-reranker-base` 重排（默认关，遇表格行值题可开，代价每问 +1.9s） |
 | 流式对话 | SSE 流式推送（`thinking / sources / text / done / error` 五类事件） |
+| 召回自检 | LangGraph 状态机：判定召回的片段能否支撑回答，不能则**拒答**而非编造（硬负例拒答 0/6 → 6/6） |
 | 多轮记忆 | Redis LPUSH + EXPIRE 30 分钟过期 |
 | 检索增强 | 查询级缓存、库外拒答、同文档补块 |
 | MCP 工具 | 3 个工具暴露给外部 Agent 调用 |
@@ -63,12 +66,15 @@ AI_Agent_Project/
 
 知识库规模：**1195 篇文档 / 13 分类**。
 
+> ⚠️ 6 题基准的 60/60 是单次采样：**同一份代码**复跑两次得到过 60/60 与 50/60，
+> 抖动来自回答与打分两级 LLM。检索层改动的效果请以 `eval_guard_probe.py`（确定性）为准。
+
 ### 运行
 
 ```bash
 cd rag_chat
 python app_fastapi.py      # http://localhost:8000
-python -m pytest tests/ -v # 57 条用例
+python -m pytest tests/ -v # 106 条用例
 ```
 
 📖 详细文档见 [rag_chat/README.md](rag_chat/README.md)
@@ -87,7 +93,7 @@ python -m pytest tests/ -v # 57 条用例
 - SSE + Rich 双端流式输出（TTY 自适应）
 - pytest 22 条用例
 
-> 该项目位于独立仓库，未包含在本仓库内。其架构设计由 [项目三](langgraph_agent/README.md) 以 LangGraph 状态机形式框架化升级。
+> 该项目位于独立仓库，未包含在本仓库内。其架构设计由**项目三**以 LangGraph 状态机形式框架化升级。
 
 ---
 
@@ -152,16 +158,8 @@ Agent 不依赖外部代码「被动喂历史」，而是通过工具**自己决
 
 ### 运行
 
-```bash
-# CLI 交互
-cd langgraph_agent && python agent.py
-
-# Web 聊天（复用项目一前端 chat.html，SSE 节点级流式）
-cd langgraph_agent && python app_web.py   # http://localhost:8001
-
-# 测试
-cd langgraph_agent && python -m pytest tests/ -v   # 38 条用例
-```
+该项目已移出本仓库（独立仓库，代码不在 `AI_Agent_Project/` 内），本仓库不提供可执行命令。
+它通过 `RAG_CHAT_DIR` 指向本仓库的 `rag_chat/` 复用知识库与前端。
 
 ### 配置（`.env`，优先读 rag_chat/.env）
 
@@ -174,7 +172,7 @@ cd langgraph_agent && python -m pytest tests/ -v   # 38 条用例
 | `MEMORY_TTL` | ❌ | 工作记忆保留秒数（默认 7 天） |
 | `WEB_PORT` | ❌ | Web 服务端口（默认 8001） |
 
-📖 详细文档见 [langgraph_agent/README.md](langgraph_agent/README.md)
+📖 详细文档见该项目的独立仓库。
 
 ---
 
@@ -188,18 +186,11 @@ cd AI_Agent_Project
 # 2. 项目一：RAG 问答
 cd rag_chat && python app_fastapi.py    # http://localhost:8000
 
-# 3. 项目三：多 Agent（CLI）
-cd langgraph_agent && python agent.py
-
-# 4. 项目三：多 Agent（Web）
-cd langgraph_agent && python app_web.py  # http://localhost:8001
-
-# 5. 运行测试
+# 3. 运行测试
 cd rag_chat && python -m pytest tests/ -v
-cd langgraph_agent && python -m pytest tests/ -v
 ```
 
-> 环境变量参考各子目录 `.env.example`（需自行配置 `API_KEY`；Redis 可选）。
+> 环境变量参考 `rag_chat/.env.example`（需自行配置 `API_KEY`；Redis 可选）。
 
 ## License
 

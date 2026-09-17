@@ -7,11 +7,11 @@
 ```
 AI_Agent_Project/
 ├── rag_chat/          # 项目一：RAG 知识库问答系统
-├── langgraph_agent/   # 项目三：LangGraph 多 Agent 编排引擎
 └── README.md
 ```
 
-> 项目二（Agent 工作流引擎）位于独立仓库：`AI 工作流 Agent —— 自然语言驱动的多工具编排系统`
+> 本仓库当前只含**项目一**。项目二、项目三已移出，各自维护在独立仓库；
+> 下文保留它们的说明作为索引，但代码与运行命令均不在本仓库内。
 
 ## 项目一：RAG 知识库问答系统
 
@@ -67,7 +67,7 @@ AI_Agent_Project/
 
 ## 项目三：LangGraph 多 Agent 编排引擎
 
-`langgraph_agent/` — 基于 LangGraph 状态机的「Router 意图路由 + 三子代理」多 Agent 架构，对接项目一知识库。
+独立仓库（原 `langgraph_agent/`，已移出本仓库）— 基于 LangGraph 状态机的「Router 意图路由 + 三子代理」多 Agent 架构，对接项目一知识库。
 
 | 能力 | 技术 |
 |------|------|
@@ -78,7 +78,7 @@ AI_Agent_Project/
 | 工具 | 知识库检索 / 文档列表 / 安全数学计算 |
 | 安全 | AST 白名单、MAX_ROUNDS=10 兜底 |
 
-详见 [langgraph_agent/README.md](langgraph_agent/README.md)
+详见该项目的独立仓库。
 
 ## 三个项目的关系
 

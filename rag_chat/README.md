@@ -22,6 +22,7 @@
 | 🔢 向量检索 | ChromaDB 余弦相似度检索，按文件名 + 年份 + 原文链接标注来源 |
 | 🛡️ 召回自检 | LangGraph 状态机：判定召回是否支撑回答，不支撑则**拒答**而非编造（`src/recall_guard.py`） |
 | 💬 SSE 流式对话 | Agent 循环 + 工具调用，答案附 📎 参考来源（日期·文件名·🔗查看原文） |
+| 🧹 首句净化 | 扣住模型发起工具调用前的英文旁白（`src/stream_gate.py`），不让它流到用户屏幕 |
 | 🧠 多轮记忆 | Redis 短期记忆（可选），静默降级为前端会话历史 |
 | 🧪 消融实验 | `crawl_ablation.py` 按量爬取 + `rebuild_kb.py` 参数化重建 |
 | 🔧 MCP 工具 | 3 个工具暴露给外部 Agent（`mcp_server/`） |
@@ -46,6 +47,7 @@ rag_chat/
 ├── src/
 │   ├── vector_store.py     # Chroma 向量库封装（增删查、相似度检索）
 │   ├── recall_guard.py     # 召回自检 LangGraph 状态机（条件边 + 改写重检环）
+│   ├── stream_gate.py      # 首句净化：扣住工具调用前的英文旁白
 │   ├── config.py           # .env 配置管理
 │   └── logger.py           # 日志配置
 ├── campus_scraper/         # 爬虫包
@@ -125,6 +127,12 @@ python app_fastapi.py
 ```
 
 响应为 SSE 流：`thinking` / `sources` / `text` / `done` 四类事件，前端据此渲染思考过程、参考来源和流式答案。
+
+### 首句净化（为什么回答开头不再是英文）
+
+模型在发起工具调用前常先吐一句英文旁白（`I'll search the knowledge base for information about …`）。SSE 是**逐 delta 直发**的，等这一轮结束发现是工具轮时，英文早已显示在用户屏幕上——而这一轮的文本根本没进 `messages`（只 append 了 tool_use 块），它从头到尾都不属于回答。
+
+`src/stream_gate.py` 的 `OpeningGate` 每轮扣住开头、直到出现**第一个汉字**：出汉字就把扣住的英文前缀丢掉、从汉字起原样放行（正文以汉字开头 → 流式几乎无延迟）；整轮没有汉字时，有 `tool_use` 就是旁白丢弃，没有就是正常英文回答、整段补发。改动前 6 题基准里 4~5 题的首句是这个旁白。
 
 ## 隐私保护
 
@@ -269,7 +277,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 96 条（含 test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合，均零网络）
+python -m pytest tests/ -v      # 106 条（test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化，均零网络）
 ```
 
 ## 许可证
