@@ -1,11 +1,18 @@
-# AI Agent 项目集
+# RAG 智能知识库问答系统
 
-三个递进式的 AI Agent 实践项目：从**底层手写 Agent 循环** → **RAG 知识库问答** → **LangGraph 多 Agent 编排**，覆盖 Agent 开发的完整能力链路。
+> **本仓库的主体是「项目一：RAG 知识库问答系统」**，代码位于 [`rag_chat/`](rag_chat/)——
+> 基于 FastAPI + ChromaDB + DeepSeek 的检索增强问答后端，把河南工学院官网 1195 篇公开文档
+> 变成**带拒答能力**的知识库：不知道就说不知道，而不是编造。
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Tests](https://img.shields.io/badge/tests-118%20passed-brightgreen) ![RAG命中率](https://img.shields.io/badge/检索命中率-95%25%2B-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.12%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Tests](https://img.shields.io/badge/tests-118%20passed-brightgreen) ![RAG命中率](https://img.shields.io/badge/检索命中率-95%25%2B-brightgreen)
+
+> ⚠️ **项目二 / 项目三已移出本仓库**，各自维护在独立仓库。本 README 末尾保留它们的
+> 架构说明作为索引，但运行命令不在本仓库内。
+
+## 三个项目的关系
 
 ```
-项目一（RAG 知识库）
+项目一（RAG 知识库）  ← 本仓库
     │
     ├── MCP 协议 ──→ 项目二（手写 Agent）调用知识库
     │
@@ -15,22 +22,17 @@
 （手写循环）              （状态机）
 ```
 
-## 项目总览
-
-| 项目 | 定位 | 技术栈 | 测试 | 状态 |
+| 项目 | 定位 | 技术栈 | 测试 | 位置 |
 |------|------|--------|------|------|
-| **项目一** | RAG 知识库问答系统 | FastAPI · ChromaDB · DeepSeek · Redis · SSE · LangGraph | 118 条 | ✅ 完成（本仓库） |
-| **项目二** | 手写 Agent 工作流引擎（事件驱动） | Python · asyncio · SSE · MCP | 22 条 | ✅ 完成（独立仓库） |
-| **项目三** | LangGraph 多 Agent 编排引擎 | LangGraph · DeepSeek · ChromaDB · Redis | 38 条 | ✅ 完成（独立仓库） |
-
-> 本仓库当前只包含**项目一**。项目二、项目三已移出，各自维护在独立仓库中；
-> 下面保留它们的架构说明作为索引，但运行命令不在本仓库内。
+| **项目一** | RAG 知识库问答系统 | FastAPI · ChromaDB · DeepSeek · Redis · SSE · LangGraph | 118 条 | ✅ **本仓库**（[`rag_chat/`](rag_chat/)） |
+| 项目二 | 手写 Agent 工作流引擎（事件驱动） | Python · asyncio · SSE · MCP | 22 条 | 独立仓库 |
+| 项目三 | LangGraph 多 Agent 编排引擎 | LangGraph · DeepSeek · ChromaDB · Redis | 38 条 | 独立仓库 |
 
 ## 项目结构
 
 ```
 AI_Agent_Project/
-├── rag_chat/          # 项目一：RAG 知识库问答系统
+├── rag_chat/          # 项目一：RAG 知识库问答系统（本仓库主体）
 └── README.md
 ```
 
@@ -51,23 +53,29 @@ AI_Agent_Project/
 | 流式对话 | SSE 流式推送（`thinking / sources / text / done / error` 五类事件） |
 | 召回自检 | LangGraph 状态机：判定召回的片段能否支撑回答，不能则**拒答**而非编造（硬负例拒答 0/6 → 6/6） |
 | 多轮记忆 | Redis LPUSH + EXPIRE 30 分钟过期 |
-| 检索增强 | 查询级缓存、库外拒答、同文档补块 |
+| 库外拦截 | 问外校（如"河北工学院分数线"）**直接拒答不检索**；**两层**校验——检索层看工具参数 + Agent 层看用户原话，堵住「LLM 把校名改写掉」的绕过路径 |
+| 首句净化 | 扣住模型发起工具调用前的英文旁白，不让它流到用户屏幕（`src/stream_gate.py`） |
+| 检索增强 | 查询级缓存、年份过滤、文本去重、罕见词精确兜底、同文档补块 |
 | MCP 工具 | 3 个工具暴露给外部 Agent 调用 |
 | 安全 | X-API-Key 鉴权（hmac 恒时比较）、历史长度/字数上限校验 |
 
 ### 评测成绩单
 
-| 评测 | 命中率 |
+| 评测 | 结果 |
 |------|--------|
-| 6 题基准（Qwen 60 分制） | **60/60** |
+| 6 题基准（60 分制，2026-09-16 复跑） | **60/60** |
+| 召回自检探测（硬负例 6 / 无关题 4 / 正例 5） | 自检 **off**：硬负例拒答 **0/6**；**on**：硬负例 **6/6**、无关题 **4/4**、正例 **5/5** 零误拒 |
 | 25 题随机 | **96%** |
 | 50 题随机 | **100%** |
 | 100 题随机（回归后） | **95%** |
 
 知识库规模：**1195 篇文档 / 13 分类**。
 
-> ⚠️ 6 题基准的 60/60 是单次采样：**同一份代码**复跑两次得到过 60/60 与 50/60，
-> 抖动来自回答与打分两级 LLM。检索层改动的效果请以 `eval_guard_probe.py`（确定性）为准。
+> ⚠️ **60/60 是单次采样，不是稳定性质。** 2026-09-17 用**同一份代码**跑两遍得到 60/60 与 50/60，
+> 抖动来自「回答 + 打分」两级 LLM（根因是回答级 LLM 某次把工具参数的校名改写掉了，
+> 该路径已修，见上表「库外拦截」行）。**衡量检索层改动请用 `eval_guard_probe.py`（检索层、确定性），不要用 60/60。**
+>
+> 25/50/100 题那三套的题库与脚本从未入库、已彻底丢失，无法复跑（成绩仅存于表内）。
 
 ### 运行
 
@@ -179,18 +187,28 @@ Agent 不依赖外部代码「被动喂历史」，而是通过工具**自己决
 ## 快速开始
 
 ```bash
-# 1. 克隆仓库
+# 1. 克隆仓库（Python 3.12+）
 git clone https://github.com/AAA123489/AI_Agent_Project.git
-cd AI_Agent_Project
+cd AI_Agent_Project/rag_chat
 
-# 2. 项目一：RAG 问答
-cd rag_chat && python app_fastapi.py    # http://localhost:8000
+# 2. 装依赖 + 配密钥
+pip install -r requirements.txt
+cp .env.example .env          # 填入 DeepSeek API Key
 
-# 3. 运行测试
-cd rag_chat && python -m pytest tests/ -v
+# 3. 构建知识库（三选一）
+python crawl_ablation.py 通知公告 1 10   # ① 按量爬取（分类 + 页数 + 最多几篇）
+# ② 前端管理面板点「刷新爬虫」，或 POST /scrape/start（全量，较慢）
+# ③ 前端「上传文档」，或 POST /upload（TXT / MD / PDF / DOCX）
+
+# 4. 启动
+python app_fastapi.py         # http://localhost:8000
+
+# 5. 跑测试（118 条，零网络）
+python -m pytest tests/ -v
 ```
 
-> 环境变量参考 `rag_chat/.env.example`（需自行配置 `API_KEY`；Redis 可选）。
+> 环境变量参考 [`rag_chat/.env.example`](rag_chat/.env.example)——`API_KEY` 必填；
+> Redis 可选（不装则多轮记忆静默降级为前端会话历史）。
 
 ## License
 
