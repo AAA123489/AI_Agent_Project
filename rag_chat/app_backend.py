@@ -1394,6 +1394,8 @@ def get_kb_stats() -> dict:
             "total_articles": stats.total_articles,
             "total_chunks": stats.total_chunks,
             "category_counts": stats.category_counts,
+            "uploaded_chunks": stats.uploaded_chunks,
+            "unaccounted_chunks": stats.unaccounted_chunks,
         }
     except Exception as e:
         logger.exception("查询 KB 统计失败")
@@ -1415,6 +1417,45 @@ async def ingest_files(file_paths: list[str]) -> dict:
     except Exception as e:
         logger.exception("文件入库失败")
         return {"total_chunks": 0, "files_processed": 0, "errors": [str(e)]}
+
+
+def is_valid_source_name(name: str) -> bool:
+    """
+    校验一个知识库 source 名能否作为删除目标。
+
+    放行 `分类/标题.txt` —— 1194 篇爬虫语料的 source 全是这个形状（都带斜杠），
+    所以不能简单地"有斜杠就拒"。拒绝空串、绝对路径、反斜杠、以及含 `..` 的
+    路径：删库本身只用得到名字，但路由后面还要拿它拼 _uploads/ 下的磁盘路径，
+    不能让请求方跨出去。
+
+    这个判断抽出来单独放，是因为它栽过一次：最早用 `Path(name).name != name`
+    做校验，把带斜杠的爬虫 source 全判成"非法"，403 安全闸门永远够不着。
+    有测试钉住才不会重犯。
+    """
+    if not name or name.startswith("/") or "\\" in name:
+        return False
+    return ".." not in name.split("/")
+
+
+async def delete_uploaded_file(filename: str) -> dict:
+    """
+    从知识库移除一篇用户上传的文档（按文件名）。
+
+    返回里带 status 字段供路由分流：
+      ok / not_found / rejected（不是用户上传的，拒删）/ failed
+    """
+    try:
+        from campus_scraper.pipeline import remove_uploaded_file
+        vs = _get_vector_store()
+        result = await remove_uploaded_file(filename, vs)
+        return {**result, "status": "ok" if result.get("found") else "not_found"}
+    except ValueError as e:
+        # 安全约束拦截（爬虫语料拒删）—— 不是故障，是预期内的拒绝
+        logger.warning("拒绝删除知识库文档: %s", e)
+        return {"status": "rejected", "detail": str(e)}
+    except Exception as e:
+        logger.exception("移除上传文档失败")
+        return {"status": "failed", "detail": str(e)}
 
 
 async def run_scraper_pipeline(max_pages: int = 2) -> dict:

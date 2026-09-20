@@ -18,9 +18,11 @@ import io
 import logging
 import sys
 
-# Windows 控制台 GBK 兼容
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+if __name__ == "__main__":
+    # Windows 控制台 GBK 兼容。放模块级会劫持 import 本模块者的 stdout，
+    # pytest 拆捕获流时直接 I/O 崩 —— 只在作为脚本运行时改。
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 import aiohttp
 

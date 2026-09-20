@@ -33,7 +33,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from app_backend import (
     _get_vector_store,
-    get_kb_stats, ingest_files, run_scraper_pipeline, get_active_params,
+    get_kb_stats, ingest_files, delete_uploaded_file, is_valid_source_name,
+    run_scraper_pipeline, get_active_params,
     AgentLoop, ThinkingEvent, ToolCallEvent, ToolResultEvent,
     TextEvent, DoneEvent, ErrorEvent,
 )
@@ -198,10 +199,12 @@ async def _cache_set(key: str, answer: str, sources: list, thinking: list) -> No
         return
     try:
         redis = await get_redis_client()
-        await redis.setex(key, QUERY_CACHE_TTL, json.dumps(
+        # 用 set(ex=) 而非 setex：redis-py 7.x 已把 setex 标为 deprecated
+        # （自 2.6.12 起），迁到 set 是官方指定的替代，行为完全一致。
+        await redis.set(key, json.dumps(
             {"answer": answer, "sources": sources, "thinking": thinking},
             ensure_ascii=False,
-        ))
+        ), ex=QUERY_CACHE_TTL)
     except Exception:
         pass
 
@@ -477,6 +480,51 @@ async def upload(file: UploadFile = File(...), _: str = Depends(_verify_api_key)
         return JSONResponse({"detail": "上传处理失败，请检查文件格式后重试"}, status_code=500)
 
 
+@app.delete("/upload/{filename:path}")
+async def delete_upload(filename: str, _: str = Depends(_verify_api_key)):
+    """移除一篇已入库的用户上传文档（受保护）。
+
+    之前传错文件是**没法撤销的**——只能开 Python 手敲 col.delete()。
+    这里补上：按文件名删，同时清掉磁盘上的残留副本与旧查询缓存。
+    只对 category="用户上传" 生效，爬虫抓来的正文拒删（403）。
+
+    路径参数用 `:path` 而非默认转换器：爬虫语料的 source 是
+    `分类/标题.txt`（1194 篇**全部**带斜杠），默认转换器不跨 `/`，
+    请求会先 404，下面那道 403 安全闸门永远够不着、成了摆设。
+    收下整条路径，才能让"拒删爬虫语料"真正被触发（且被测试覆盖）。
+    """
+    if not is_valid_source_name(filename):
+        return JSONResponse({"detail": "文件名非法"}, status_code=400)
+
+    result = await delete_uploaded_file(filename)
+    status = result.get("status")
+
+    if status == "rejected":
+        # 爬虫语料：remove_uploaded_file 按 category 拦下，走这里
+        return JSONResponse({"detail": result.get("detail", "拒绝删除")}, status_code=403)
+    if status == "failed":
+        return JSONResponse({"detail": "删除失败，请稍后重试"}, status_code=500)
+    if status == "not_found":
+        return JSONResponse({"detail": f"知识库中没有「{filename}」"}, status_code=404)
+
+    # 磁盘残留副本（正常情况下 /upload 的 finally 已经删过了，这里是兜底）。
+    # 只取 basename，落在 _uploads/ 之内。
+    leftover = _PROJECT_ROOT / "scraped_docs" / "_uploads" / Path(filename).name
+    try:
+        leftover.unlink(missing_ok=True)
+    except Exception:
+        logger.warning("清理上传残留文件失败: %s", leftover, exc_info=True)
+
+    # 知识库已变化，旧查询缓存可能过时
+    await _flush_query_cache()
+
+    return {
+        "filename": filename,
+        "deleted_chunks": result.get("deleted_chunks", 0),
+        "status": "ok",
+    }
+
+
 @app.post("/scrape")
 async def scrape(pages: int = 2, _: str = Depends(_verify_api_key)):
     """触发爬虫（后台运行，返回任务确认信息；受保护）"""
@@ -540,13 +588,20 @@ async def scrape_start(background_tasks: BackgroundTasks, pages: int = 2, _: str
 
 @app.get("/kb-stats")
 async def kb_stats():
-    """知识库统计"""
+    """知识库统计
+
+    uploaded_chunks  —— category="用户上传" 的块数（走 /upload 进来的）
+    unaccounted_chunks —— 既不属于 13 个爬虫分类、也不属于用户上传的块数。
+        正常永远是 0；非 0 就说明库里有来源不明的块，别放过。
+    """
     try:
         stats = get_kb_stats()
         return {
             "total_articles": stats.get("total_articles", 0),
             "total_chunks": stats.get("total_chunks", 0),
             "category_counts": stats.get("category_counts", {}),
+            "uploaded_chunks": stats.get("uploaded_chunks", 0),
+            "unaccounted_chunks": stats.get("unaccounted_chunks", 0),
         }
     except Exception:
         logger.exception("KB 统计失败")

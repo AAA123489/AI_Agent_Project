@@ -21,8 +21,11 @@ import os
 import re
 import sys
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", datefmt="%H:%M:%S")
+if __name__ == "__main__":
+    # Windows 控制台 GBK 兼容（只在作为脚本运行时改 stdout；放模块级会劫持
+    # import 本模块者的 stdout，pytest 拆捕获流时崩）
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("eval_score")
 
 from dotenv import load_dotenv  # noqa: E402

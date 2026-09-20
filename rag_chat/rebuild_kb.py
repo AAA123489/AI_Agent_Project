@@ -25,9 +25,13 @@ import re
 import sys
 from pathlib import Path
 
-# Windows 控制台 GBK 兼容
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+if __name__ == "__main__":
+    # Windows 控制台 GBK 兼容。
+    # 必须待在 __main__ 里：放模块级会连 import 本模块的人一起劫持
+    # （sys.stdout 被换成新 wrapper，pytest 拆捕获流时原流已关 →
+    #  "I/O operation on closed file"，整套测试报告崩掉）。
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 # 离线加载嵌入模型：HF_HUB_OFFLINE 跳过 hf-mirror.com 网络校验。
 # 阶段1 后期 hf-mirror 网络异常，模型加载时的 HTTP 校验挂起/segfault；
@@ -75,13 +79,28 @@ def parse_txt(path: Path) -> dict | None:
     }
 
 
+def corpus_txt_files(root: Path | None = None) -> list[Path]:
+    """
+    列出爬虫语料里的所有 .txt（供消融重建使用）。
+
+    排除 _uploads/：那是 /upload 落临时文件的地方，不属于爬虫语料。
+    不排的话，一个上传的 .txt/.md 会被当成"官网文章"混进重建结果——
+    消融实验的分块数、命中率就全被污染了，而且完全看不出来。
+    """
+    root = root or SCRAPED_DIR
+    return sorted(
+        p for p in root.rglob("*.txt")
+        if "_uploads" not in p.parts
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="消融实验：从 scraped_docs/ 重建知识库")
     parser.add_argument("--chunk-size", type=int, default=500, help="分块大小（默认 500）")
     parser.add_argument("--chunk-overlap", type=int, default=50, help="重叠窗口（默认 50）")
     args = parser.parse_args()
 
-    files = sorted(SCRAPED_DIR.rglob("*.txt"))
+    files = corpus_txt_files()
     if not files:
         print("❌ scraped_docs/ 下没有 .txt，请先运行 crawl_ablation.py 爬取")
         return

@@ -116,9 +116,10 @@ python app_fastapi.py
 | GET | `/health` | 健康检查（含 `kb_chunks`） |
 | POST | `/chat` | SSE 流式对话（Body：`user_id` / `message` / `history`） |
 | POST | `/upload` | 文档上传入库（multipart `file`） |
+| DELETE | `/upload/{文件名}` | 移除一篇已上传文档（爬虫语料拒删，403） |
 | POST | `/scrape` | 触发爬虫（确认） |
 | POST | `/scrape/start` | 实际执行爬虫 |
-| GET | `/kb-stats` | 知识库统计 |
+| GET | `/kb-stats` | 知识库统计（含 `uploaded_chunks` / `unaccounted_chunks`） |
 
 `POST /chat` 请求示例：
 
@@ -278,7 +279,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 118 条（test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端，均零网络）
+python -m pytest tests/ -v      # 147 条（test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_upload_lifecycle.py 上传生命周期，均零网络；后者读临时 Chroma）
 ```
 
 ## 许可证

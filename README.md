@@ -9,7 +9,7 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![LangGraph](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-118%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-147%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -208,7 +208,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 118 条，零网络
+python -m pytest tests/ -v      # 147 条，零网络
 ```
 
 ---
@@ -221,9 +221,14 @@ python -m pytest tests/ -v      # 118 条，零网络
 | GET | `/health` | 健康检查（含 `kb_chunks`） | — |
 | POST | `/chat` | SSE 流式对话 | ✅ |
 | POST | `/upload` | 文档上传入库（multipart） | ✅ |
+| DELETE | `/upload/{文件名}` | 移除一篇已上传文档（爬虫语料拒删，403） | ✅ |
 | POST | `/scrape` | 触发爬虫（确认） | ✅ |
 | POST | `/scrape/start` | 实际执行爬虫 | ✅ |
-| GET | `/kb-stats` | 知识库统计 | — |
+| GET | `/kb-stats` | 知识库统计（含 `uploaded_chunks` / `unaccounted_chunks`） | — |
+
+> `unaccounted_chunks` 正常**恒为 0**：它统计"既不属于 13 个爬虫分类、也不属于
+> 用户上传"的块。非 0 就说明库里有来源不明的内容，别放过——上传的文档和爬虫
+> 语料同住一个 collection，靠这个差额才看得出有没有东西混进来。
 
 **`POST /chat` 请求示例**：
 
@@ -602,7 +607,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 118 条，零网络
+python -m pytest tests/ -v      # 147 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
@@ -738,7 +743,7 @@ rag_chat/
 ├── static/
 │   ├── chat.html           # 聊天前端（SSE 流式 + 参考来源卡片）
 │   └── admin.html          # 管理面板（爬虫 / 上传 / 库统计）
-├── tests/                  # pytest 118 条
+├── tests/                  # pytest 147 条
 ├── docs/                   # 改进记录 / 设计文档
 ├── requirements.txt
 └── .env.example

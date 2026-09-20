@@ -3,8 +3,9 @@ campus_scraper/pipeline.py — 核心桥接模块
 ===============================
 职责：
 - run_scrape_pipeline()    爬取 → 清洗 → 保存 .txt → 分块 → 嵌入 → ChromaDB
-- get_knowledge_base_stats()  从 ChromaDB 查询动态统计
+- get_knowledge_base_stats()  从 ChromaDB 查询动态统计（含「用户上传」与差额）
 - ingest_uploaded_files()    处理前端上传的文件
+- remove_uploaded_file()     移除一篇用户上传的文档（爬虫语料拒删）
 """
 
 import asyncio
@@ -40,6 +41,14 @@ CHUNK_OVERLAP = 50
 
 # ── 知识库集合名（修复 bug：统一用 my_rag_collection） ──
 COLLECTION_NAME = "my_rag_collection"
+
+# ── 用户上传内容的分类标签 ──
+# 上传的文档和爬虫抓的文档同住在 my_rag_collection 里，靠这个 category 区分。
+# 它不在 CATEGORIES 里（那是 13 个爬虫分类），所以 get_knowledge_base_stats 里
+# 必须单独数一次——否则 total_chunks（整个 collection）会比 category_counts
+# 之和大出一截，而没人看得出来差在哪。2026-09-20 就是靠这个差额才发现
+# 有 5 篇测试上传的文档（378 块）在库里躺了半个月。
+UPLOAD_CATEGORY = "用户上传"
 
 
 def _save_clean_text(article: ArticleMetadata) -> Path:
@@ -238,6 +247,20 @@ def get_knowledge_base_stats(
         if count > 0:
             stats.category_counts[cat_name] = count
 
+    # ── 用户上传（不在 CATEGORIES 里，单独数） ──
+    stats.uploaded_chunks = vector_store.count_by_category(UPLOAD_CATEGORY)
+
+    # ── 对不上的块数 ──
+    # total_chunks 是整个 collection，category_counts 只覆盖上面那 13 类 + 用户上传。
+    # 两者之差 > 0 就意味着库里有"来源不明"的内容（手工写入、旧分类残留、
+    # 改了 category 标签的迁移……）。这个数正常应当是 0，一旦非 0 就是知识库
+    # 被污染的信号，必须查——不能让它继续当个看不见的差额存在。
+    stats.unaccounted_chunks = (
+        stats.total_chunks
+        - sum(stats.category_counts.values())
+        - stats.uploaded_chunks
+    )
+
     # 去重统计文章数（按 source 字段）
     try:
         all_data = vector_store.collection.get()
@@ -315,7 +338,7 @@ async def ingest_uploaded_files(
             for _ in chunks:
                 metadatas.append({
                     "source": path.name,
-                    "category": "用户上传",
+                    "category": UPLOAD_CATEGORY,
                     "source_site": "本地文件",
                     "publish_date": datetime.now().strftime("%Y-%m-%d"),
                     "url": f"file://{path.absolute()}",
@@ -344,3 +367,41 @@ async def ingest_uploaded_files(
         "files_processed": files_processed,
         "errors": errors,
     }
+
+
+async def remove_uploaded_file(
+    filename: str,
+    vector_store: VectorStore | None = None,
+) -> dict:
+    """
+    从知识库移除一篇用户上传的文档（按 source 名，即文件名）。
+
+    安全约束：只删 category == UPLOAD_CATEGORY 的块。爬虫抓来的正文一律拒删——
+    一个 DELETE 请求不该有能力抹掉学校官网的语料，否则误删就是不可逆的
+    （chroma_db 没有备份）。
+
+    返回: {"found": bool, "deleted_chunks": int, "filename": str}
+    抛出: ValueError —— 该 source 存在但不是用户上传的
+    """
+    if vector_store is None:
+        vector_store = VectorStore(
+            db_path=str(_PROJECT_ROOT / "chroma_db"),
+            collection_name=COLLECTION_NAME,
+        )
+
+    got = vector_store.collection.get(where={"source": filename})
+    ids = got.get("ids") or []
+    if not ids:
+        return {"found": False, "deleted_chunks": 0, "filename": filename}
+
+    metas = got.get("metadatas") or []
+    cats = {(m or {}).get("category") for m in metas}
+    if cats != {UPLOAD_CATEGORY}:
+        raise ValueError(
+            f"「{filename}」不是用户上传的文档"
+            f"（category={sorted(c for c in cats if c)}），拒绝删除"
+        )
+
+    vector_store.collection.delete(ids=ids)
+    logger.info("已移除用户上传文档 %s（%d 块）", filename, len(ids))
+    return {"found": True, "deleted_chunks": len(ids), "filename": filename}

@@ -76,8 +76,11 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
+if __name__ == "__main__":
+    # Windows 控制台 GBK 兼容（只在作为脚本运行时改 stdout；放模块级会劫持
+    # import 本模块者的 stdout，pytest 拆捕获流时崩）
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
 
 from app_backend import (  # noqa: E402
     AgentLoop,

@@ -35,3 +35,5 @@ class KnowledgeBaseStats:
     total_chunks: int = 0
     last_updated: str = ""              # ISO 时间
     category_counts: dict = field(default_factory=dict)
+    uploaded_chunks: int = 0            # category="用户上传" 的块数
+    unaccounted_chunks: int = 0         # 既不属于 13 个爬虫分类、也不属于「用户上传」的块数

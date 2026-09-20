@@ -60,8 +60,11 @@ if _ARGS.top_k is not None:
 if _ARGS.mode is not None:
     os.environ["RETRIEVAL_MODE"] = _ARGS.mode
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
+if __name__ == "__main__":
+    # Windows 控制台 GBK 兼容（只在作为脚本运行时改 stdout；放模块级会劫持
+    # import 本模块者的 stdout，pytest 拆捕获流时崩）
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
 
 from app_backend import AgentLoop, ThinkingEvent, ToolCallEvent, ToolResultEvent, TextEvent, DoneEvent, ErrorEvent, get_active_params  # noqa: E402
 
