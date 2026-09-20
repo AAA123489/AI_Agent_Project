@@ -4,7 +4,7 @@ campus_scraper/pipeline.py — 核心桥接模块
 职责：
 - run_scrape_pipeline()    爬取 → 清洗 → 保存 .txt → 分块 → 嵌入 → ChromaDB
 - get_knowledge_base_stats()  从 ChromaDB 查询动态统计
-- ingest_uploaded_files()    处理 Gradio 上传的文件
+- ingest_uploaded_files()    处理前端上传的文件
 """
 
 import asyncio
@@ -136,7 +136,7 @@ async def run_scrape_pipeline(
     参数:
         max_pages: 每个分类最多爬几页列表
         vector_store: 可复用的 VectorStore 实例（不传则新建）
-        progress_callback: async callback(status_dict) 用于 Gradio 进度更新
+        progress_callback: async callback(status_dict) 用于前端进度更新
 
     返回: {"total_articles": int, "total_chunks": int, "errors": list}
     """

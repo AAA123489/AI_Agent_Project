@@ -718,8 +718,7 @@ rag_chat/
 │   ├── hybrid_retriever.py # 混合检索：BM25 + RRF 融合 + 可选 CrossEncoder 重排
 │   ├── recall_guard.py     # 召回自检 LangGraph 状态机（条件边 + 改写重检环）
 │   ├── stream_gate.py      # 首句净化：扣住工具调用前的英文旁白
-│   ├── config.py           # .env 配置管理
-│   └── logger.py           # 日志配置
+│   └── config.py           # .env 配置管理
 ├── campus_scraper/         # 爬虫包
 │   ├── config.py           # 爬取分类 / 速率 / 日期过滤
 │   ├── models.py           # ArticleMetadata 等数据模型

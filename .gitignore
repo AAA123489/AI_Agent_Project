@@ -34,6 +34,9 @@ scraped_docs/
 # 评测结果产物（每次跑都不一样，出报告时才临时留，不入库）
 eval_results_*.json
 eval_score_*.md
+# 例外：下面两个已入库，是 60/60 的原始记录（README 引用了它们），别取消跟踪
+!rag_chat/eval_results_baseline_topk8.json
+!rag_chat/eval_score_topk8.md
 
 # 外网穿透工具二进制
 ngrok.exe

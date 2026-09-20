@@ -1,10 +1,8 @@
 """
-app_backend.py — Agent 后端封装
+app_backend.py — Agent 后端核心
 ===============================
-封装 VectorStore 检索、LLM 调用（Anthropic Tool Use 格式）、Agent 循环。
-不修改任何现有代码，只做导入和适配。
-
-为 Gradio 前端提供 run_agent() 异步生成器。
+封装混合检索、LLM 调用（Anthropic Tool Use 格式）、工具执行与 Agent 循环。
+对外提供 AgentLoop（SSE 流式事件）以及检索 / 入库 / 爬虫等函数，由 app_fastapi.py 调用。
 """
 
 import ast
@@ -37,7 +35,7 @@ from src.stream_gate import OpeningGate
 
 load_dotenv()
 
-logger = logging.getLogger("gradio_agent")
+logger = logging.getLogger("agent_backend")
 
 # ═══════════════════════════════════════════════════════
 # 配置
@@ -1363,126 +1361,7 @@ class AgentLoop:
 
 
 # ═══════════════════════════════════════════════════════
-# Agent 循环（异步生成器，每步 yield 一次给 Gradio）—— 旧版，仅作兼容保留
-# ═══════════════════════════════════════════════════════
-
-async def run_agent(message: str, history: list[dict], api_key: str):
-    """
-    Agent 核心循环。
-    每完成一个步骤（推理/调工具/结果），yield (messages_to_append, sources, thinking_steps)
-    参考：项目二事件驱动 + 项目三 Anthropic Tool Use 格式
-    """
-    thinking_steps: list[str] = []
-    sources: list[dict] = []
-    start_time = time.time()
-    step_no = 0
-
-    def now() -> str:
-        return datetime.now().strftime("%H:%M:%S")
-
-    def add_step(text: str):
-        nonlocal step_no
-        step_no += 1
-        thinking_steps.append(f"[{now()}] **Step {step_no}**: {text}")
-
-    def ts():
-        """简短时间戳，显示在气泡上方"""
-        return datetime.now().strftime("%H:%M")
-
-    # ── 构建消息列表 ──
-    def _normalize_content(content) -> str:
-        """Gradio 6.x 的 content 可能是 list[dict] 或 str，统一转成 str"""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    parts.append(block)
-            return "".join(parts)
-        return str(content) if content else ""
-
-    messages: list[dict] = []
-    for msg in (history or []):
-        role = msg.get("role", "user")
-        content = _normalize_content(msg.get("content", ""))
-        if not content or content.startswith("⏳"):
-            continue
-        messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": message})
-
-    # ── 初次 yield：用户消息 ──
-    add_step(f"接收 Query: [{message[:60]}{'...' if len(message) > 60 else ''}]")
-    yield [{"role": "user", "content": message, "metadata": {"title": ts()}}], sources, list(thinking_steps)
-
-    try:
-        for rnd in range(MAX_ROUNDS):
-            add_step(f"第 {rnd + 1} 轮推理 — 调用 LLM...")
-            yield [], sources, list(thinking_steps)
-
-            response = await _call_llm(messages, api_key)
-
-            if response.get("tool_uses"):
-                for tu in response["tool_uses"]:
-                    name = tu["name"]
-                    inp = tu.get("input", {})
-                    tid = tu.get("id", f"tool_{rnd}")
-
-                    add_step(f"🔧 调用工具: `{name}({json.dumps(inp, ensure_ascii=False)})`")
-                    yield [], sources, list(thinking_steps)
-
-                    # 库外主体二次校验（用户原话），命中就不跑检索
-                    blocked = _guard_tool_call(name, message)
-                    result_text = blocked if blocked else execute_tool(name, inp)
-
-                    if name == "search_knowledge_base":
-                        sources = _parse_sources(result_text)
-                        if result_text.startswith("【召回自检"):
-                            add_step("🛡️ 召回自检未通过，已拒答")
-                        elif result_text.startswith("【库外题拦截"):
-                            add_step("🚫 库外题拦截，已拒答")
-                        else:
-                            add_step(f"📋 检索到 {len(sources)} 条相关结果")
-                    else:
-                        add_step(f"📋 返回: {result_text[:120]}")
-
-                    yield [], sources, list(thinking_steps)
-
-                    messages.append({
-                        "role": "assistant",
-                        "content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}],
-                    })
-                    messages.append({
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": tid, "content": result_text}],
-                    })
-            else:
-                answer = response.get("text", "")
-                elapsed = time.time() - start_time
-                add_step(f"✅ 生成完成 | {rnd + 1} 轮 | 耗时 {elapsed:.1f}s")
-
-                yield [
-                    {"role": "assistant", "content": answer, "metadata": {"title": ts()}},
-                ], sources, list(thinking_steps)
-                return
-
-        add_step(f"⚠️ 达到最大轮数 {MAX_ROUNDS}，强制终止")
-        yield [
-            {"role": "assistant", "content": "抱歉，处理超时，请简化问题后重试。", "metadata": {"title": ts()}},
-        ], sources, list(thinking_steps)
-
-    except Exception as e:
-        logger.exception("Agent 异常")
-        add_step(f"❌ 异常: {e}")
-        yield [
-            {"role": "assistant", "content": f"抱歉，处理请求时出错: {e}", "metadata": {"title": ts()}},
-        ], sources, list(thinking_steps)
-
-
-# ═══════════════════════════════════════════════════════
-# 知识库统计 + 文件入库（供 Gradio 调用）
+# 知识库统计 + 文件入库
 # ═══════════════════════════════════════════════════════
 
 def _get_kb_stats_tool() -> str:
