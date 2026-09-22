@@ -611,6 +611,16 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 | `list_sources()` | 列出知识库所有文档来源及块数 |
 | `ingest_file(file_path)` | 解析 → 切分 → 入库 |
 
+**注册**（配置**不在本仓库里**，原因见「踩过的坑」）：
+
+```bash
+claude mcp add rag-knowledge-base -- python <仓库绝对路径>/rag_chat/mcp_server/server.py
+```
+
+用绝对路径指向 `server.py` 而非 `-m mcp_server.server`：后者要求 `rag_chat` 同时在
+cwd 和模块搜索路径上，而 `claude mcp add` **没有 `--cwd` 参数**；`server.py` 自己会把
+上级目录插进 `sys.path`，绝对路径调用就不需要 cwd。
+
 **安全**：
 
 | 措施 | 实现 |
@@ -768,6 +778,49 @@ segfault**。修法：加 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`，加载降�
 只 append 进 `thinking_steps`、**没有 `yield ThinkingEvent(...)`**——
 这些步骤在流式过程中客户端根本看不到，**评测回放里也查不出走了哪个分支**；
 而非流式的 `run()` 是会下发的，**两处行为不一致**。已统一补上 `yield`。
+
+### 改了配置，而那份文件根本没人读
+
+**现象**：仓库里躺着 `.claude/mcp.json`，写着 MCP server 的启动命令和 `cwd`。
+仓库从 `AI_Agent_Project/` 搬到 `RAG/` 后这里的 `cwd` 成了死路径，
+于是郑重提了一次「修正 MCP server 死路径」的 commit。**但 MCP 从来没起来过，
+修完也没起来。**
+
+**根因**：Claude Code **不读 `.claude/mcp.json`**。项目级配置的位置是**仓库根**的
+`.mcp.json`，本地配置在 `~/.claude.json`。而且失败是**静默**的：
+
+```
+$ claude mcp list
+No MCP servers configured.
+```
+
+真正的注册在 `~/.claude.json` 里，挂在**搬迁前那个已经不存在的目录**下面。
+所以 MCP 从搬家那天起就是死的，跟 `.claude/mcp.json` 里写什么毫无关系。
+
+**修法**：删掉那个文件——它是**误导**而不是配置；把注册方式写进 README。
+
+> 教训：**改配置前先确认它真的被读。** 判据不是"文件存在"，是
+> `claude mcp list` 里有没有它。那次修的是一个不存在的因果链。
+
+### 静默空库：换了个 cwd，检索开始返回空
+
+**现象**：MCP server 由客户端以**未知 cwd** 拉成子进程。而 MCP 这条链
+（`mcp_server/tools.py` → `rag_pipeline.py`）是唯一**不传 `db_path`** 的，
+于是落到 `VectorStore` 的默认值上。
+
+**根因**：那个默认值原本写作相对路径 `"./chroma_db"`。而 chromadb 的
+`get_or_create_collection` 对不存在的路径是**静默新建空库**——不抛异常。
+于是换 cwd 的后果不是崩溃，而是**检索永远返回空，然后 LLM 顺着上下文开始编**。
+生产调用点（`app_backend` / `campus_scraper` / `rebuild_kb`）本来就显式传了绝对
+路径，只有 MCP 这条链裸奔。
+
+**修法**：默认库路径改为按 `__file__` 解析（`_DEFAULT_DB_PATH`）。
+
+**验证**：从仓库根（陌生 cwd）走 MCP 链，拿到 `my_rag_collection` / **5919 块**——
+修复前这里是 0。
+
+> 教训：**这个技术栈里"路径没解析对"不是异常，是空结果。** 凡是把相对路径当
+> 默认值的地方，都要问一句「换个 cwd 会怎样」。
 
 ---
 
