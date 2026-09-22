@@ -276,7 +276,35 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 
 ## MCP 工具
 
-`mcp_server/` 通过 MCP 协议暴露：知识库检索 / 文档列表 / 文档入库，供项目二（手写 Agent）等外部 Agent 调用。
+`mcp_server/` 通过 MCP 协议暴露三个工具，供项目二（手写 Agent）等外部 Agent 调用：
+
+| 工具 | 作用 |
+|---|---|
+| `search_knowledge_base` | 混合检索（向量 + BM25 + RRF） |
+| `list_sources` | 列出知识库已有文档 |
+| `ingest_file` | 把文档入到知识库 |
+
+### 注册方式
+
+**MCP 配置不在本仓库里。** Claude Code 读的是机器本地配置（`~/.claude.json`）
+或**仓库根**的 `.mcp.json`——**不读 `.claude/mcp.json`**，而且失败是静默的
+（`claude mcp list` 只显示 `No MCP servers configured`，不报错）。
+
+```bash
+claude mcp add rag-knowledge-base -- python <仓库绝对路径>/rag_chat/mcp_server/server.py
+```
+
+用**绝对路径指向 `server.py`**，而不是 `-m mcp_server.server`：后者要求 `rag_chat`
+同时在 cwd 和模块搜索路径上，而 `claude mcp add` **没有 `--cwd` 参数**（实测 `--help`
+无此项）。`server.py` 自己会把上级目录插进 `sys.path`，故绝对路径调用不需要 cwd。
+
+> ⚠️ **为什么这里对 cwd 这么敏感**：`vector_store.py` 的默认库路径原先写成相对路径
+> `"./chroma_db"`，进程 cwd 一变库的位置就跟着漂；而 chromadb 对不存在的路径是
+> **静默新建空库**——后果不是崩溃，是检索永远返回空、然后 LLM 开始编。
+> 已改为按 `__file__` 解析（`_DEFAULT_DB_PATH`）。
+>
+> **代价记录**：曾在 `.claude/mcp.json` 里"修"过一次路径（commit `6238585`），
+> 而那个文件根本不被读取——等于白改。该文件已删除。
 
 ## 测试
 

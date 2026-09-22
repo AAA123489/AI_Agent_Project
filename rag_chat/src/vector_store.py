@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import uuid
+from pathlib import Path
 
 import chromadb
 from chromadb.utils import embedding_functions
@@ -15,6 +16,15 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 _embedding_fn = None
 
+# 默认库路径按「文件位置」解析，不按「当前工作目录」。
+# 原值是相对路径 "./chroma_db"：进程 cwd 一变，库的位置就跟着漂。而 chromadb 的
+# get_or_create_collection 对不存在的路径是**静默新建空库**，不报错——于是
+# 「换个 cwd 启动」的后果不是崩溃，而是检索永远返回空、答案开始编。MCP server
+# 正是这种情形：它由客户端以未知 cwd 拉成子进程（见 .mcp.json / claude mcp add）。
+# app_backend / campus_scraper / rebuild_kb 都显式传了绝对 db_path，
+# 只有 mcp_server 这条链没传，所以这个默认值必须自己可靠。
+_DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
+
 
 def _get_embedding_fn():
     """延迟加载 Embedding 函数（避免导入时下载模型）。"""
@@ -27,7 +37,7 @@ def _get_embedding_fn():
 
 
 class VectorStore:
-    def __init__(self, db_path="./chroma_db", collection_name="ai_knowledge_base"):
+    def __init__(self, db_path=_DEFAULT_DB_PATH, collection_name="ai_knowledge_base"):
         # 这里曾有 distance_threshold=0.85 参数，2026-09-17 删除：它只在 __init__ 里
         # 赋了个属性，search_similar 从不引用，5 个调用点却都煞有介事地传了 0.85，
         # 读代码的人会以为相似度阈值在生效。实测线上库的余弦距离全距是 0.14~0.61，
