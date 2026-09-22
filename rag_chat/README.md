@@ -33,7 +33,7 @@
 - **Web 框架**：FastAPI + Uvicorn（ASGI），SSE 流式
 - **爬虫**：aiohttp + BeautifulSoup + lxml
 - **向量库**：ChromaDB（本地持久化，paraphrase-multilingual-MiniLM-L12-v2 中文 Embedding）
-- **编排**：LangGraph（召回自检状态机，条件边 + 改写重检环）
+- **编排**：LangGraph（Agent 主循环状态机 `AGENT_GRAPH` + 召回自检状态机，条件边 + 工具环 + 重检环）
 - **LLM**：DeepSeek（Anthropic 兼容 Tool Use 格式）
 - **记忆**：Redis（可选，LPUSH + EXPIRE 30 分钟）
 - **前端**：原生 HTML/CSS/JS，`static/chat.html`
@@ -47,6 +47,7 @@ rag_chat/
 ├── redis_client.py         # Redis 短期记忆（可选）
 ├── src/
 │   ├── vector_store.py     # Chroma 向量库封装（增删查、相似度检索）
+│   ├── agent_graph.py      # Agent 主循环 LangGraph 状态机（工具环 + 轮数计数器）
 │   ├── recall_guard.py     # 召回自检 LangGraph 状态机（条件边 + 改写重检环）
 │   ├── stream_gate.py      # 首句净化：扣住工具调用前的英文旁白
 │   └── config.py           # .env 配置管理
@@ -231,6 +232,7 @@ START → retrieve → grade ─┬─(sufficient)──────────
 |------|------|------|
 | `RECALL_GUARD` | `off` | `on` 启用自检图 |
 | `RECALL_GUARD_MAX_ATTEMPTS` | `1` | 检索轮数。`1`=不重检，`2`=允许一次改写重检（环跑一圈） |
+| `AGENT_GRAPH` | `off` | `on` 时 Agent 主循环走 LangGraph 状态机（`src/agent_graph.py`），`off` 走原手写 for-step 循环 |
 
 **效果**（`eval_guard_probe.py`，硬负例 6 + 无关题 4 + 正例 5）：
 
@@ -279,7 +281,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 147 条（test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_upload_lifecycle.py 上传生命周期，均零网络；后者读临时 Chroma）
+python -m pytest tests/ -v      # 190 条（test_agent_graph.py 主循环图、test_agent_graph_equivalence.py 新旧路径等价性、test_recall_guard.py 自检图、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_upload_lifecycle.py 上传生命周期，均零网络；后者读临时 Chroma）
 ```
 
 ## 许可证

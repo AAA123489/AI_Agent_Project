@@ -72,6 +72,10 @@ RECALL_GUARD = os.getenv("RECALL_GUARD", "off")
 # 环的代码保留且可开关（消融要能复跑）。样本只有十几题，结论强度有限；
 # 将来若要重开环，先让判官带上「上一轮已判不充分」的上下文，再重跑消融。
 RECALL_GUARD_MAX_ATTEMPTS = int(os.getenv("RECALL_GUARD_MAX_ATTEMPTS", "1"))
+# Agent 主循环开关：on 时走 LangGraph 状态机（src/agent_graph.py），
+# off（默认）走原手写 for-step 循环 —— 两条路径行为对齐，开关只为灰度与对照。
+# 与 RECALL_GUARD 同一策略：新路径先并存、验证过了再谈默认打开。
+AGENT_GRAPH = os.getenv("AGENT_GRAPH", "off")
 # 知识库主体院校：用于识别「问别的学校」的库外题，避免张冠李戴幻觉（如 Q6 河北工学院）
 KB_SUBJECT_SCHOOL = os.getenv("KB_SUBJECT_SCHOOL", "河南工学院")
 # Agent 循环上限：工具结果已完整返回（800 字覆盖整个块），单题 1~2 轮即可回答。
@@ -96,6 +100,7 @@ def get_active_params() -> str:
         f"top_k={TOP_K} | retrieval_mode={RETRIEVAL_MODE} | rerank={RETRIEVAL_RERANK} | "
         f"recall_guard={RECALL_GUARD}"
         + (f"(attempts={RECALL_GUARD_MAX_ATTEMPTS})" if RECALL_GUARD == "on" else "")
+        + f" | agent_graph={AGENT_GRAPH}"
     )
 
 # ═══════════════════════════════════════════════════════
@@ -802,6 +807,21 @@ def _guard_tool_call(name: str, user_question: str) -> str | None:
     return _refuse_out_of_kb_school(user_question or "")
 
 
+def _classify_refusal(result_text: str) -> str | None:
+    """把检索结果的**字符串前缀**归类成结构化的拒答原因。
+
+    拒答文案的前缀是检索层与自检图的既有契约（两者都在 app_backend 之外产生），
+    所以判定留在这里，不让编排层（src/agent_graph.py）依赖这些字面量。
+
+    前缀必须具体：宽泛的「【」会把库外拦截误标成自检未通过。
+    """
+    if result_text.startswith("【召回自检"):
+        return "recall_guard"
+    if result_text.startswith("【库外题拦截"):
+        return "out_of_kb"
+    return None
+
+
 def execute_tool(name: str, input_: dict) -> str:
     if name == "search_knowledge_base":
         return _search_knowledge_base(**input_)
@@ -1169,6 +1189,31 @@ class ErrorEvent:
 AgentEvent = ThinkingEvent | ToolCallEvent | ToolResultEvent | TextEvent | DoneEvent | ErrorEvent
 
 
+def _to_agent_event(payload: dict) -> AgentEvent | None:
+    """把 Agent 图推出的事件 payload（dict）转成本层的事件对象。
+
+    编排层（src/agent_graph.py）不 import 本模块，只产出"发生了什么"的纯数据；
+    事件 dataclass 是表现层契约，归 app_backend 所有 —— 转换放在这一层。
+    """
+    kind = payload.get("type")
+    if kind == "thinking":
+        return ThinkingEvent(step=payload["step"])
+    if kind == "tool_call":
+        return ToolCallEvent(tool=payload["tool"], args=payload["args"])
+    if kind == "tool_result":
+        return ToolResultEvent(
+            tool=payload["tool"], success=payload["success"],
+            output=payload["output"], sources=payload.get("sources"),
+        )
+    if kind == "text":
+        return TextEvent(content=payload["content"])
+    if kind == "done":
+        return DoneEvent(thinking=payload["thinking"], sources=payload["sources"])
+    if kind == "error":
+        return ErrorEvent(message=payload["message"])
+    return None
+
+
 class AgentLoop:
     """Agent 核心循环 —— 事件驱动版（对齐项目二工作流引擎）。
 
@@ -1186,6 +1231,32 @@ class AgentLoop:
     ):
         self.api_key = api_key
         self.max_rounds = max_rounds
+        # Agent 图按实例缓存：api_key 来自请求头（每个 AgentLoop 一个），
+        # 没法像 _recall_graph 那样做成模块级单例 —— 图在构建时就要绑定 key。
+        self._graph = None
+
+    def _get_graph(self):
+        """懒构建 Agent 图。langgraph 走函数内 import：AGENT_GRAPH=off 时零开销。"""
+        if self._graph is None:
+            from src.agent_graph import build_agent_graph
+
+            # 依赖一律用 lambda **晚绑定**：图只构建一次并缓存在实例上，
+            # 若在构建时就把函数对象抓进来，之后 monkeypatch（测试/热修复）
+            # 对这些依赖就失效了 —— 而手写路径每次都是现取模块全局，行为不一致。
+            self._graph = build_agent_graph(
+                llm_fn=lambda messages, on_delta: _call_llm(
+                    messages, self.api_key, on_delta=on_delta
+                ),
+                tool_fn=lambda name, input_: execute_tool(name, input_),
+                guard_fn=lambda name, question: _guard_tool_call(name, question),
+                parse_sources_fn=lambda text: _parse_sources(text),
+                classify_refusal_fn=lambda text: _classify_refusal(text),
+                max_rounds=self.max_rounds,
+                max_history_turns=MAX_HISTORY_TURNS,
+                max_history_chars=MAX_HISTORY_CHARS,
+            )
+            logger.info("Agent 图已构建 (agent_graph=on, max_rounds=%d)", self.max_rounds)
+        return self._graph
 
     # ── 公开 API ──────────────────────────────────────────
 
@@ -1202,7 +1273,64 @@ class AgentLoop:
         message: str,
         history: list[dict] | None = None,
     ) -> AsyncGenerator[AgentEvent, None]:
-        """事件驱动主循环：for-step 保证有限步数终止，每步 yield 事件对象。"""
+        """事件驱动主循环。
+
+        `AGENT_GRAPH=on` 走 LangGraph 状态机（src/agent_graph.py），
+        `off`（默认）走原手写 for-step 循环 —— 两条路径产出同样的
+        事件序列与同样的答案，开关只为灰度与对照。
+        """
+        if AGENT_GRAPH == "on":
+            async for event in self._run_stream_graph(message, history):
+                yield event
+        else:
+            async for event in self._run_stream_legacy(message, history):
+                yield event
+
+    async def _run_stream_graph(
+        self,
+        message: str,
+        history: list[dict] | None = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """LangGraph 路径：图推出 dict payload，本层转成事件对象。"""
+        from src.agent_graph import recursion_limit
+
+        emitted = False
+        try:
+            graph = self._get_graph()
+            async for mode, chunk in graph.astream(
+                {"question": message, "history": history, "max_rounds": self.max_rounds},
+                {"recursion_limit": recursion_limit(self.max_rounds)},
+                stream_mode=["custom", "values"],
+            ):
+                if mode != "custom":
+                    continue  # "values" 只为拿终态，不转发
+                event = _to_agent_event(chunk)
+                if event is None:
+                    continue
+                emitted = True
+                yield event
+        except Exception:
+            logger.exception("Agent 图执行失败")
+            if emitted:
+                # 已经吐出过事件了，重跑会重复输出 —— 交给上层错误边界
+                # （app_fastapi 的 run_agent_sse 会把异常转成 error 事件）
+                raise
+            # 一个字都还没发（图构建失败 / langgraph 缺依赖等）：退回手写循环，
+            # 用户照常拿到答案。窗口很窄 —— 首个事件在 prepare 节点就发了，
+            # 所以这里兜住的主要是"图根本没跑起来"这一类失败。
+            logger.warning("Agent 图未产出任何事件，回退手写循环")
+            async for event in self._run_stream_legacy(message, history):
+                yield event
+
+    async def _run_stream_legacy(
+        self,
+        message: str,
+        history: list[dict] | None = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """事件驱动主循环：for-step 保证有限步数终止，每步 yield 事件对象。
+
+        `AGENT_GRAPH=off`（默认）时的实现，也是新路径的降级目标。
+        """
         thinking_steps: list[str] = []
         sources: list[dict] = []
         step_no = 0

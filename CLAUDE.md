@@ -44,6 +44,7 @@ AI_Agent_Project/
 - `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
 - `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）、`RETRIEVAL_RERANK=off`（重排默认关，遇表格行值题可临时开，代价每问 +1.9s）
 - `RECALL_GUARD=off`（召回自检默认关，关掉即改造前行为）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环）
+- `AGENT_GRAPH=off`（Agent 主循环默认走手写 for-step 循环；`on` 走 LangGraph 状态机 `src/agent_graph.py`，两条路径行为对齐，开关只为灰度与对照）
 
 **评测成绩单**：
 

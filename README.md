@@ -9,7 +9,7 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![LangGraph](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-147%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-190%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -27,13 +27,14 @@
 - [关键设计](#关键设计)
   - [1. 混合检索：向量 + BM25 + RRF](#1-混合检索向量--bm25--rrf)
   - [2. 四层检索增强](#2-四层检索增强)
-  - [3. 召回自检（LangGraph 状态机）](#3-召回自检langgraph-状态机)
-  - [4. 库外拦截（两层校验）](#4-库外拦截两层校验)
-  - [5. 首句净化](#5-首句净化)
-  - [6. 分块与参数消融](#6-分块与参数消融)
-  - [7. 文档解析：表格结构化 + OCR 兜底](#7-文档解析表格结构化--ocr-兜底)
-  - [8. 多轮记忆与查询缓存](#8-多轮记忆与查询缓存)
-  - [9. MCP 工具与安全](#9-mcp-工具与安全)
+  - [3. Agent 主循环（LangGraph 状态机）](#3-agent-主循环langgraph-状态机)
+  - [4. 召回自检（LangGraph 状态机）](#4-召回自检langgraph-状态机)
+  - [5. 库外拦截（两层校验）](#5-库外拦截两层校验)
+  - [6. 首句净化](#6-首句净化)
+  - [7. 分块与参数消融](#7-分块与参数消融)
+  - [8. 文档解析：表格结构化 + OCR 兜底](#8-文档解析表格结构化--ocr-兜底)
+  - [9. 多轮记忆与查询缓存](#9-多轮记忆与查询缓存)
+  - [10. MCP 工具与安全](#10-mcp-工具与安全)
 - [评测](#评测)
 - [测试](#测试)
 - [踩过的坑](#踩过的坑)
@@ -67,6 +68,7 @@
 | 🔢 混合检索 | 向量 + BM25 双路召回，**RRF 名次融合**（`k=60`） |
 | 🎯 检索增强 | 年份过滤、文本去重、罕见词精确兜底、同文档补块 |
 | ⚙️ 可选重排 | `bge-reranker-base` CrossEncoder 精排（默认关，`N=16`） |
+| 🔁 **Agent 主循环** | **LangGraph 状态机**：ReAct 工具环 + 轮数计数器终止，与原手写循环行为对齐（可开关） |
 | 🛡️ **召回自检** | **LangGraph 状态机**：判定召回的片段能否支撑回答，不能则**拒答**而非编造 |
 | 🚫 库外拦截 | 问外校问题直接拒答不检索；**两层校验**（工具参数 + 用户原话） |
 | 🧹 首句净化 | 扣住模型发起工具调用前的英文旁白，不让它流到用户屏幕 |
@@ -105,7 +107,7 @@ ChromaDB（collection: my_rag_collection，5919 块）
    │
    ├─[0] 查询缓存（Redis，命中则秒回，跳过下面全部）
    ▼
-LLM（Agent 循环，工具调用，最多 6 轮）
+LLM（Agent 主循环：LangGraph 状态图 / 手写 for-step，二选一；最多 6 轮）
    │  决定调用 search_knowledge_base(query=...)
    ▼
 ┌────────────── 检索层 _retrieve_candidates ──────────────┐
@@ -141,7 +143,7 @@ LLM 生成（SSE 逐 delta 下发，经「首句净化」闸门）
 | Embedding | `paraphrase-multilingual-MiniLM-L12-v2`（sentence-transformers） |
 | 关键词检索 | jieba 分词 + rank_bm25（OKAPI） |
 | 重排 | `BAAI/bge-reranker-base` CrossEncoder（可选，~440MB） |
-| 编排 | LangGraph 1.2（召回自检状态机） |
+| 编排 | LangGraph 1.2（Agent 主循环状态机 + 召回自检状态机，均可开关） |
 | LLM | DeepSeek（Anthropic 兼容 Tool Use 格式） |
 | 记忆 / 缓存 | Redis 7 |
 | 文档解析 | pypdf + pdfplumber + RapidOCR + python-docx |
@@ -208,7 +210,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 147 条，零网络
+python -m pytest tests/ -v      # 190 条，零网络
 ```
 
 ---
@@ -301,7 +303,72 @@ python -m pytest tests/ -v      # 147 条，零网络
 还有个细节：补块本身没跟 query 算过相似度，**沿用所属来源的最高相似度展示**，
 不然列表里会出现「相似度 3%」的块，误导用户。
 
-### 3. 召回自检（LangGraph 状态机）
+### 3. Agent 主循环（LangGraph 状态机）
+
+#### 为什么做：`for` 循环本来就是一张图
+
+`AgentLoop` 原本是手写的 `for rnd in range(6)` ReAct 循环：调 LLM → 有 `tool_use` 就执行工具
+→ 回到 LLM → 没有就收工。这段控制流本身就是一张图，只是用 `for` 写出来的：
+
+```
+START → prepare → llm ─┬─(有 tool_use)→ tools ─┬─(round < max_rounds)→ llm
+                       │                      └─(轮数用尽)──────────→ exhausted → END
+                       └─(无 tool_use)─────────────────────────────→ finalize → END
+```
+
+改写成状态机的收益不是性能，是**分支与环显式化**：工具的二次校验、拒答分类、轮数终止
+从循环体里的 `if` 变成图上的节点与边。再往里加环节（并行工具、多轮改写、工具路由）
+是加边，不是继续往 `for` 里塞 `if`。
+
+`AGENT_GRAPH=off` 走原循环，`on` 走状态图，**两条路径行为对齐**——这是改造的前提，
+不是顺手为之（见下方「怎么证明没改行为」）。
+
+#### 三个必须踩对的点
+
+**① 两条路由边，不是一条。**
+
+「LLM 要工具吗」和「轮数用尽吗」问的是**不同问题**，所以分在两条边上：
+前者在 `llm` 之后问，后者在 `tools` 之后问。合成一条会漏掉一次工具执行——
+原来的 `for rnd in range(max_rounds)` 在**最后一轮仍然执行工具**再兜底，
+若把轮数判定提到 `llm` 之前，最后一轮的工具就不会执行了。这个差异是等价性测试抓出来的。
+
+**② `recursion_limit` 必须由轮数推导，不能拍死数。**
+
+LangGraph 1.2.10 的 `recursion_limit` **默认是 10007**（不是旧版的 25）——
+靠它兜底等于没有兜底，环真跑飞会空转到一万步。真正的终止条件是 state 里的 `round` 计数器，
+`recursion_limit` 只是"计数器万一写错"的二次保险，写成 `4 * max_rounds + 6`。
+**关键是它必须始终宽于计数器**：写死成 30 的话，`max_rounds` 一调大就会反过来先炸
+`GraphRecursionError`，保险丝变成真正的终止条件。
+
+**③ `messages` 用覆盖语义，不挂 `add_messages`。**
+
+state 里的 `messages` 装的是 **Anthropic 原生块格式**
+（`{"type": "tool_use"}` / `{"type": "tool_result"}`）。`add_messages` reducer 会把 dict
+转成 LangChain Message 对象并改写 content 结构，**破坏发出去的请求体**。
+所以这里用覆盖语义、节点自己拼列表——同 `recall_guard` 里「计数器用覆盖、历史用累加」的取舍。
+
+#### 怎么证明没改行为
+
+改写编排最大的风险是"顺手改了行为"。所以除了 31 条图单元测试，
+另写了 [12 条等价性测试](rag_chat/tests/test_agent_graph_equivalence.py)：
+**同一份脚本化假 LLM / 假工具**分别驱动 `AGENT_GRAPH=off` 与 `on`，
+断言**事件序列、发给 LLM 的消息列表、工具调用**三者逐项相等（时间戳与耗时归一化后）。
+覆盖 5 个场景：工具轮+回答轮 / 纯回答 / 非流式补发 / 单轮多工具 / 轮数用尽兜底。
+
+> **边界**：这是**假 LLM 驱动**的结构性等价证明，不是真机逐字对照
+> （真机 LLM 有采样抖动，`TEMPERATURE=0.3` 下同一问题两次的检索词都可能不同）。
+> 真机只做了端到端冒烟。
+
+#### 一个实现约束
+
+图模块**不 import `app_backend`**，依赖全部注入（`llm_fn` / `tool_fn` / `guard_fn` / ...）。
+两个理由：一是 `app_backend` 要 import 图模块（循环 import），
+二是让图测试不必拉起 chromadb / torch。
+
+注入时**必须用晚绑定 lambda**（`lambda name, input_: execute_tool(name, input_)` 而非
+`tool_fn=execute_tool`）：后者在构建图时就捕获了函数对象，测试里 monkeypatch 会**静默失效**。
+
+### 4. 召回自检（LangGraph 状态机）
 
 #### 为什么做：一个真实的功能缺口
 
@@ -322,7 +389,10 @@ START → retrieve → grade ─┬─(sufficient)──────────
 ```
 
 补这个缺口需要的正是**条件分支 + 环 + 显式终止条件**——这是状态机相对 `if/else` 的价值。
-主对话循环仍是手写的 `AgentLoop`（未上框架）：那个循环太简单，上图是过度设计。
+
+这是本项目**第一张**状态图（2026-09 改造）。主对话循环当时仍是手写的 `AgentLoop`，
+后来也一并改成了状态图，见上文 [3. Agent 主循环](#3-agent-主循环langgraph-状态机)——
+两张图同源，都是把「分支 + 环 + 终止条件」从 `if` 里提出来。
 
 #### 阈值必须从真实库标定
 
@@ -398,7 +468,7 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 判官判的是**相关性**而非**可答性**。所以「主题词在库、具体事实不在库」的灰区题
 （如「现任校长是谁」，库里只有外单位领导的人名）会被放行。
 
-### 4. 库外拦截（两层校验）
+### 5. 库外拦截（两层校验）
 
 **问题**：问「河北工学院的录取分数线是多少」，库里当然没有，但放它进检索会捞回一堆
 河南工学院的分数文档，LLM 顺势就把本校分数当答案答了（**张冠李戴的幻觉**）。
@@ -434,7 +504,7 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 **拒答文案是强化的**：明确写「严禁补充河南工学院或其他学校的任何信息（含录取分数），
 即使作为附加说明也不行，只拒绝不展开」。
 
-### 5. 首句净化
+### 6. 首句净化
 
 **现象**：改造前回答的第一句是英文——
 
@@ -468,7 +538,7 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 （`I'll search… 让我查一下知识库。`）再调工具，那段中文会被开闸瞬间放行。
 实测未遇到过。
 
-### 6. 分块与参数消融
+### 7. 分块与参数消融
 
 **自研递归切分器**（`text_splitter.py`）：段落 → 句子（`。！？；`）→ 逗号 → 空格 → 硬切；
 贪心累积到 `CHUNK_SIZE`，块边界保留 `CHUNK_OVERLAP` 重叠。
@@ -497,7 +567,7 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 **消融纪律**：一次只改一个参数，用同一组问题对比；每次重建会**清空** ChromaDB；
 对话日志按 `EXPERIMENT_TAG` 分文件，每条记录自动附带当前模型/温度/上限/`top_k`。
 
-### 7. 文档解析：表格结构化 + OCR 兜底
+### 8. 文档解析：表格结构化 + OCR 兜底
 
 | 格式 | 处理 |
 |---|---|
@@ -514,7 +584,7 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 
 上传白名单：`.txt / .md / .pdf / .docx`。
 
-### 8. 多轮记忆与查询缓存
+### 9. 多轮记忆与查询缓存
 
 | | 多轮记忆 | 查询缓存 |
 |---|---|---|
@@ -531,7 +601,7 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 **缓存失效**：知识库内容变化（上传文档 / 爬虫入库成功）后调 `_flush_query_cache()`，
 按前缀 `rag:answer:v2:*` 用 **`scan_iter` 逐一删除**（不用 `KEYS`，避免阻塞 Redis）。
 
-### 9. MCP 工具与安全
+### 10. MCP 工具与安全
 
 **MCP**（`mcp_server/`）暴露 3 个工具，供外部 Agent 调用：
 
@@ -607,17 +677,23 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 147 条，零网络
+python -m pytest tests/ -v      # 190 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
 |---|---|---|
+| `test_agent_graph.py` | 31 | 主循环图：事件顺序 / 工具环 / 轮数终止 / `recursion_limit` 推导 / 首句净化接线 |
 | `test_recall_guard.py` | 30 | 自检图：节点 / 条件边 / 环 / **终止性** / 判官故障兜底 |
+| `test_upload_lifecycle.py` | 29 | 上传文档生命周期（读临时 Chroma） |
+| `test_vector_store.py` | 20 | Chroma 封装：增删查 / 相似度检索 |
+| `test_mcp_tools.py` | 17 | MCP 3 个工具的参数与返回 |
+| `test_text_splitter.py` | 15 | 递归切分器 + `sanitize_privacy` 隐私脱敏 |
+| **`test_agent_graph_equivalence.py`** | **12** | **新旧路径等价性：`AGENT_GRAPH=off/on` 事件序列逐项相等** |
 | `test_stream_gate.py` | 10 | 首句净化：逐字喂与整段喂结果一致（切片边界不影响） |
 | `test_hybrid_retriever.py` | 9 | RRF 融合保留 `vector_distance`，含「BM25 第一名污染 distance」机理 |
 | `test_out_of_kb_guard.py` | 8 | 库外闸门两层各自的分工（纯字符串） |
 | `test_q6_rewrite_integration.py` | 4 | **假 LLM 端到端**复现「LLM 改写掉校名」这条路径 |
-| 其余（MCP 工具 / 向量库 / 切分器 / 爬虫分页） | 57 | 单元测试 |
+| `test_scraper_pagination.py` | 5 | 爬虫分页去重 |
 
 **三个设计上的讲究**：
 
@@ -630,6 +706,11 @@ python -m pytest tests/ -v      # 147 条，零网络
 3. **测「接线」而不只测「函数」** —— `test_out_of_kb_guard.py` 测闸门函数本身，
    `test_q6_rewrite_integration.py` 测**闸门有没有真的接在 `run_stream` 上**。
    少了这层，闸门写得再对也可能是**死代码**
+4. **改编排必配等价性测试** —— `test_agent_graph_equivalence.py` 用同一份假 LLM/假工具
+   分别驱动新旧两条路径，断言事件序列、发给 LLM 的消息、工具调用**逐项相等**。
+   做重构时，"没改行为"应该是**测出来的**而不是**声称的**。
+   ⚠️ 配套约束：注入依赖必须用晚绑定 lambda，否则 monkeypatch 静默失效、
+   等价性测试会退化成"自己跟自己比"
 
 **变异验证**：写完 Q6 修复后，临时把 `_guard_tool_call` 改成**恒返回 `None`**
 （模拟「修复不存在」），4 条集成测试里 **3 条失败**——确认测试**真的钉住了这次修复**，
@@ -699,6 +780,7 @@ segfault**。修法：加 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`，加载降�
 | 首句净化只认汉字 | 同轮「英文 + 中文」旁白会漏；实测未遇到 |
 | 查询缓存忽略 `history` | 同一问题在不同上下文下共用缓存，是命中率优先的取舍 |
 | 隐性时效词不敏感 | 「最近有安排暑期社会实践」的「最近」检索器感知不到，2025 年通知可能排在 2026 年前 |
+| 等价性是假 LLM 证明的 | `AGENT_GRAPH` 新旧路径的等价性由**脚本化假 LLM** 驱动断言，真机只做了冒烟；真机有采样抖动无法逐字对照 |
 | 60/60 有 ±10 采样噪声 | 两级 LLM，见上文 |
 | 25/50/100 题题库已丢失 | 从未入库，无法复跑 |
 
@@ -721,6 +803,7 @@ rag_chat/
 ├── src/
 │   ├── vector_store.py     # Chroma 向量库封装（增删查、相似度检索）
 │   ├── hybrid_retriever.py # 混合检索：BM25 + RRF 融合 + 可选 CrossEncoder 重排
+│   ├── agent_graph.py      # Agent 主循环 LangGraph 状态机（工具环 + 轮数计数器）
 │   ├── recall_guard.py     # 召回自检 LangGraph 状态机（条件边 + 改写重检环）
 │   ├── stream_gate.py      # 首句净化：扣住工具调用前的英文旁白
 │   └── config.py           # .env 配置管理
@@ -743,7 +826,7 @@ rag_chat/
 ├── static/
 │   ├── chat.html           # 聊天前端（SSE 流式 + 参考来源卡片）
 │   └── admin.html          # 管理面板（爬虫 / 上传 / 库统计）
-├── tests/                  # pytest 147 条
+├── tests/                  # pytest 190 条
 ├── docs/                   # 改进记录 / 设计文档
 ├── requirements.txt
 └── .env.example
