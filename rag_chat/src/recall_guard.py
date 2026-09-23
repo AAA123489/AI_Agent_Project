@@ -1,4 +1,4 @@
-"""召回自检图 —— 判断检索回来的内容是否真的能支撑回答。
+"""召回自检 —— 判断检索回来的内容是否真的能支撑回答。
 
 ## 解决什么问题
 
@@ -12,11 +12,23 @@
 结果：问「河南工学院食堂几点开门」这种**本校但库里真没有**的题，系统会把最不相关的
 块塞进 LLM 上下文让它编。实测该 query 的检索返回 6211 字符 / 15 个块。
 
-## 为什么用 LangGraph 而不是一个 if
+## 三种去向，其中一种要回到检索
 
-判完之后有三种去向，其中一种**要回到检索节点重来**：
-充分 → 格式化放行；不充分 → 改写 query 回检索（环）；主题不符/重试用尽 → 拒答。
-带环的编排是 if/else 表达不了的部分——这才是引入状态机的理由。
+充分 → 格式化放行；不充分 → 改写 query 回检索；主题不符/重试用尽 → 拒答。
+第二与第三种的区别就是"要不要重来一次"，所以这是一个**带环的循环**。
+
+## 为什么是手写循环
+
+2026-09 之前这里是一张 LangGraph `StateGraph`（`retrieve → grade →条件边`），
+改成手写**只为去掉框架依赖，不改行为**——判定顺序、每个默认值、拒答文案都逐项
+保留，30 条单元测试里 29 条一行未动。
+
+框架那版的环有个隐患：唯一的外层保险 `recursion_limit` 默认值是 **10007**
+（不是旧版的 25），等于没有兜底，环跑飞会空转到一万步、每圈都在烧 LLM 调用。
+手写循环不需要这个二次保险——`attempt` 每圈 +1，`attempt < max_attempts` 不成立
+即退出，**循环上界由计数器直接决定**。条件边那侧的 `path_map` 白名单同理不再需要：
+原来路由函数返回未映射的 key 会直接 KeyError（而 SSE 侧没有 try/except，会打断
+整条流），现在 `return` 就是 `return`。
 
 ## 两条必须知道的事实（都实测过，别凭印象改）
 
@@ -44,14 +56,6 @@
 
 环（`RECALL_GUARD_MAX_ATTEMPTS=2`）实测**没有收益、且有反效果**，所以默认值是 1。
 详见 app_backend 里该常量的注释与 docs/改进记录.md 第 15 条。代码保留可开关。
-
-## 终止保证
-
-LangGraph 1.2.10 的 `recursion_limit` 默认是 **10007**（不是旧版的 25），
-靠它兜底等于没有兜底——环真跑飞了会空转到一万步才报错，中间每圈都在烧 LLM 调用。
-所以真正的终止条件是 state 里的 `attempt` 计数器；`recursion_limit` 由
-`max_attempts` 推导（`4*n+6`），**必须始终宽于计数器**——拍个死数会让它从"二次保险"
-变成真正的终止条件（`max_attempts=5` 配死数 10 就先炸 GraphRecursionError 了，实测）。
 """
 
 from __future__ import annotations
@@ -59,16 +63,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import TypedDict
-
-from langgraph.graph import END, START, StateGraph
 
 logger = logging.getLogger(__name__)
 
 # ── 阈值（照上文表格标定；换 embedding 模型后必须重新标定）──
 PASS_DIST = 0.30  # 最佳向量余弦距离 ≤ 此值 → 直接放行，不调判官
 
-# 判官的合法判定（路由函数只认这三个，其余一律归一化成 sufficient）
+# 判官的合法判定（只认这三个，其余一律归一化成 sufficient）
 _VERDICTS = ("sufficient", "insufficient", "off_topic")
 
 # 自检拒答文案。前缀必须是「【召回自检」——AgentLoop 靠它区分本层拒答与
@@ -94,25 +95,6 @@ JUDGE_PROMPT = """你是 RAG 系统的召回质量判定器。用户提了一个
 
 【输出格式】严格输出一行，不要有任何其他内容：
 VERDICT: sufficient|insufficient|off_topic | REWRITE: <判 insufficient 时给一个更可能检索到答案的查询，否则填 -> | EVIDENCE: <从片段里逐字抄一句你的判断依据，20 字以内>"""
-
-
-class RecallState(TypedDict, total=False):
-    """图状态。
-
-    `attempt` 用覆盖语义（不加 reducer）——它就是终止计数器，累加语义在这里是错的。
-    对比项目三的 `messages` 用 `operator.add` 累加：什么时候该用 reducer、
-    什么时候该覆盖，取决于字段表达的是"累积历史"还是"当前值"。
-    """
-
-    query: str           # 用户原始问题（改写后不变）
-    current_query: str   # 当前检索用的 query（判官改写后会变）
-    top_k: int           # 检索片段数（MCP 侧会传非默认值，所以放进 state 而不是闭包里）
-    candidates: list[dict]
-    short_circuit: str | None  # 检索侧早退文案（库外拦截/检索失败/未找到）
-    verdict: str
-    attempt: int
-    max_attempts: int
-    context: str         # 最终返回给调用方的文本
 
 
 def _parse_verdict(raw: str) -> tuple[str, str]:
@@ -157,130 +139,96 @@ def _judge_input(query: str, candidates: list[dict], limit: int = 5, chars: int 
     return "\n\n".join(parts)
 
 
-def build_recall_graph(*, retrieve_fn, format_fn, llm_fn, api_key: str):
-    """构造召回自检图（DI 工厂）。
+def _best_vec_dist(candidates: list[dict]) -> float | None:
+    """候选里最小的**向量路原始余弦距离**；一个都没有则 None。
 
-    依赖全部注入而**不 import app_backend**：一是避免循环 import
-    （app_backend 要 import 本模块），二是让图测试不必拉起 chromadb / torch。
-
-    - retrieve_fn(query, top_k) -> 信封 dict {"candidates", "short_circuit", "timings"}
-    - format_fn(candidates) -> str
-    - llm_fn(messages, api_key, **kw) -> {"text", ...}，async
-
-    这里**不收** max_attempts 参数：图的形状与它无关，它属于「怎么跑」而不是「图长什么样」，
-    由 run_recall_guard 写进 state。之前放在工厂签名里，是个改了没反应的静默失效参数。
+    只看 `vector_distance`：融合后的 `distance` 被 BM25 归一化分污染过（见模块开头）。
+    一个块都没有、或全部来自 BM25 路时返回 None —— 此时必走判官，不做距离快通过。
     """
+    vec_dists = [c["vector_distance"] for c in candidates if "vector_distance" in c]
+    return min(vec_dists) if vec_dists else None
 
-    async def _retrieve(state: RecallState) -> dict:
-        query = state.get("current_query") or state["query"]
-        # 检索是同步阻塞的（Chroma 查询 + BM25 全库打分 + 补块），显式丢线程池，
-        # 不依赖 langgraph 对同步节点的隐式 executor 行为
-        env = await asyncio.to_thread(retrieve_fn, query, state.get("top_k") or 8)
-        return {
-            "candidates": env.get("candidates") or [],
-            "short_circuit": env.get("short_circuit"),
-            "attempt": state.get("attempt", 0) + 1,
-        }
 
-    async def _grade(state: RecallState) -> dict:
-        # 检索侧已早退（库外拦截/失败/未找到）：文案是现成的，不必判，直接透传
-        if state.get("short_circuit"):
-            return {"verdict": "sufficient"}
+async def _judge(llm_fn, api_key: str, query: str, candidates: list[dict], best: float | None):
+    """调 LLM 判官 → (verdict, rewrite)。判官出错按放行处理，绝不中断问答。"""
+    try:
+        resp = await llm_fn(
+            [{"role": "user", "content": _judge_input(query, candidates)}],
+            api_key,
+            system=JUDGE_PROMPT,
+            tools=[],          # 判官不需要工具，走 [] 让 _call_llm 不下发 tools 字段
+            max_tokens=150,
+            temperature=0,
+        )
+        raw = resp.get("text", "")
+    except Exception:
+        # 判官本身出错绝不能中断问答——按放行处理（宁可少拒答，不可误拒答）
+        logger.exception("召回自检判官调用异常，按放行处理")
+        raw = ""
+    verdict, rewrite = _parse_verdict(raw)
+    logger.info("召回自检：best=%s 判官=%s rewrite=%r", best, verdict, rewrite[:40])
+    return verdict, rewrite
 
-        candidates = state.get("candidates") or []
-        # 只看向量路的原始余弦距离——融合后的 distance 被 BM25 归一化分污染过，不能用
-        vec_dists = [c["vector_distance"] for c in candidates if "vector_distance" in c]
-        best = min(vec_dists) if vec_dists else None
 
-        # 快通过：向量路都认为高度相关，直接放行，省掉一次 LLM 往返。
-        # 基线 5 题的最佳距离全在 0.14~0.31，大部分问题走这条路。
-        if best is not None and best <= PASS_DIST:
-            logger.info("召回自检：向量距离 %.3f ≤ %.2f，快通过", best, PASS_DIST)
-            return {"verdict": "sufficient"}
+async def run_recall_guard(
+    *,
+    retrieve_fn,
+    format_fn,
+    llm_fn,
+    api_key: str,
+    query: str,
+    top_k: int = 8,
+    max_attempts: int = 1,
+) -> str:
+    """跑一次召回自检，返回最终文本（检索上下文 / 检索侧早退文案 / 自检拒答文案）。
 
-        # 模糊带 → LLM 判官
-        query = state.get("current_query") or state["query"]
-        try:
-            resp = await llm_fn(
-                [{"role": "user", "content": _judge_input(query, candidates)}],
-                api_key,
-                system=JUDGE_PROMPT,
-                tools=[],          # 判官不需要工具，走 [] 让 _call_llm 不下发 tools 字段
-                max_tokens=150,
-                temperature=0,
-            )
-            raw = resp.get("text", "")
-        except Exception:
-            # 判官本身出错绝不能中断问答——按放行处理（宁可少拒答，不可误拒答）
-            logger.exception("召回自检判官调用异常，按放行处理")
-            raw = ""
-        verdict, rewrite = _parse_verdict(raw)
-        logger.info("召回自检：best=%s 判官=%s rewrite=%r", best, verdict, rewrite[:40])
-        out: dict = {"verdict": verdict}
-        if verdict == "insufficient" and rewrite:
-            out["current_query"] = rewrite
-        return out
+    依赖全部注入而**不 import app_backend**：一是避免循环 import（app_backend 要
+    import 本模块），二是让测试不必拉起 chromadb / torch。
 
-    async def _format(state: RecallState) -> dict:
-        return {"context": format_fn(state.get("candidates") or [])}
+    - `retrieve_fn(query, top_k)` → 信封 dict `{"candidates", "short_circuit", "timings"}`，
+      同步阻塞（Chroma 查询 + BM25 全库打分 + 补块），故显式丢线程池。
+    - `format_fn(candidates)` → str
+    - `llm_fn(messages, api_key, **kw)` → `{"text", ...}`，async
 
-    async def _refuse(state: RecallState) -> dict:
-        # 两个来源共用一个出口：检索侧早退有现成文案（库外拦截/未找到），原样透传；
-        # 否则是自检判出来的拒答
-        return {"context": state.get("short_circuit") or REFUSE_TEXT}
+    `max_attempts` 默认 1 = **不重检**。它既是生产的默认
+    （`RECALL_GUARD_MAX_ATTEMPTS`），也是消融结论（环无收益且有反效果）。
+    形参默认值与生产默认值取同一个数，是因为改成手写后只剩这一个入口——
+    原来图里 `_route` 另有一个"state 里没写 max_attempts 就保守取 1"的默认，
+    那是给直接 `ainvoke` 的调用方兜底的，现在没有那种调用方了。
+    """
+    current_query = query
+    attempt = 0
 
-    def _route(state: RecallState) -> str:
-        """条件边。返回值**必须**是下方 path_map 里的 key——
-        langgraph 的 _branch.py 是 self.ends[r]，返回未映射的 key 直接 KeyError，
-        而 AgentLoop 那侧没有 try/except，异常会打断整条 SSE 流。
-        所以这里的每个 return 都是字面量，且 verdict 已在 _parse_verdict 里做过白名单归一化。
-        """
-        if state.get("short_circuit"):
-            return "refuse"
-        verdict = state.get("verdict", "sufficient")
+    while True:
+        # ── 检索 ──
+        env = await asyncio.to_thread(retrieve_fn, current_query, top_k)
+        candidates = env.get("candidates") or []
+        short_circuit = env.get("short_circuit")
+        attempt += 1
+
+        # ── 判定 ──
+        if short_circuit:
+            # 检索侧已早退（库外拦截/失败/未找到）：文案是现成的，不必判
+            verdict = "sufficient"
+        else:
+            best = _best_vec_dist(candidates)
+            # 快通过：向量路都认为高度相关，直接放行，省掉一次 LLM 往返。
+            # 基线 5 题的最佳距离全在 0.14~0.31，大部分问题走这条路。
+            if best is not None and best <= PASS_DIST:
+                logger.info("召回自检：向量距离 %.3f ≤ %.2f，快通过", best, PASS_DIST)
+                verdict = "sufficient"
+            else:
+                # 模糊带 → LLM 判官
+                verdict, rewrite = await _judge(llm_fn, api_key, current_query, candidates, best)
+                if verdict == "insufficient" and rewrite:
+                    current_query = rewrite
+
+        # ── 去向（原条件边的三个分支）──
+        if short_circuit:
+            # 检索侧早退：文案原样透传（库外拦截的「【库外题拦截】」前缀靠它区分类别）
+            return short_circuit
         if verdict == "sufficient":
-            return "format"
-        # 默认 1 = 不重检。直接 ainvoke 的调用方没写 max_attempts 时的保守取值：
-        # 不明确要求重检，就不要自作主张多打一枪。
-        if verdict == "insufficient" and state.get("attempt", 0) < state.get("max_attempts", 1):
-            return "retrieve"  # ← 这就是那条环
-        return "refuse"        # off_topic，或 insufficient 但重试用尽
-
-    graph = StateGraph(RecallState)
-    graph.add_node("retrieve", _retrieve)
-    graph.add_node("grade", _grade)
-    graph.add_node("format", _format)
-    graph.add_node("refuse", _refuse)
-    graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "grade")
-    graph.add_conditional_edges(
-        "grade",
-        _route,
-        {"format": "format", "retrieve": "retrieve", "refuse": "refuse"},
-    )
-    graph.add_edge("format", END)
-    graph.add_edge("refuse", END)
-    return graph.compile()
-
-
-async def run_recall_guard(graph, query: str, top_k: int = 8, max_attempts: int = 2) -> str:
-    """跑一次自检图，返回最终文本（检索上下文 或 拒答文案）。"""
-    final = await graph.ainvoke(
-        {
-            "query": query,
-            "current_query": query,
-            "top_k": top_k,
-            "candidates": [],
-            "verdict": "",
-            "attempt": 0,
-            "max_attempts": max_attempts,
-        },
-        # 显式传：真正的终止靠 state 里的 attempt，这里只是「计数器万一写错」的二次保险。
-        # 不显式传的话默认是 10007，等于没有兜底。
-        # 但也不能拍一个死数——上限必须**始终宽于** attempt 计数器，否则它就从
-        # 二次保险变成了真正的终止条件（max_attempts=5 配死数 10 就会先炸
-        # GraphRecursionError，而不是按计数正常转拒答）。每圈 retrieve→grade
-        # 两个 superstep，4*n+6 留足余量。
-        {"recursion_limit": 4 * max(1, max_attempts) + 6},
-    )
-    return final.get("context") or ""
+            return format_fn(candidates)
+        if verdict == "insufficient" and attempt < max_attempts:
+            continue           # ← 这就是那条环（默认进不来，max_attempts=1）
+        return REFUSE_TEXT     # off_topic，或 insufficient 但重试用尽

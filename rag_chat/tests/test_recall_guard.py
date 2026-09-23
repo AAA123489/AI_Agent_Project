@@ -1,10 +1,10 @@
-"""测试召回自检图（src/recall_guard.py）—— 节点逻辑、条件边、改写重检环、终止保证。
+"""测试召回自检（src/recall_guard.py）—— 判定逻辑、三种去向、改写重检环、终止保证。
 
 全部通过 DI 注入 fake `retrieve_fn` / `llm_fn`，**零网络、零 LLM 调用、不依赖 chromadb/torch**。
-图本身也不 import app_backend，所以本文件不需要拉起向量库。
+本模块也不 import app_backend，所以本文件不需要拉起向量库。
 
 不用 `@pytest.mark.asyncio`（.venv 没装 pytest-asyncio），照项目三
-`langgraph_agent_项目三/tests/test_agent_loop.py` 的写法用 `asyncio.run`。
+`tests/test_agent_loop.py` 的写法用 `asyncio.run`。
 """
 import asyncio
 
@@ -14,7 +14,6 @@ from src.recall_guard import (
     PASS_DIST,
     REFUSE_TEXT,
     _parse_verdict,
-    build_recall_graph,
     run_recall_guard,
 )
 
@@ -78,13 +77,15 @@ def _make_llm(spy, verdict="sufficient", rewrite="-"):
 
 
 def _run(retrieve, llm, query="测试问题", top_k=8, max_attempts=2):
-    graph = build_recall_graph(
+    return asyncio.run(run_recall_guard(
         retrieve_fn=retrieve,
         format_fn=lambda cands: f"[{len(cands)} 块]检索上下文",
         llm_fn=llm,
         api_key=API_KEY,
-    )
-    return asyncio.run(run_recall_guard(graph, query, top_k, max_attempts))
+        query=query,
+        top_k=top_k,
+        max_attempts=max_attempts,
+    ))
 
 
 # ── _parse_verdict：宽松解析 + 双默认兜底 ──────────────────────
@@ -231,33 +232,31 @@ def test_改写为空时不重复打同一枪():
 
 
 def test_未指定max_attempts时默认不重检():
-    """直接 ainvoke 的调用方没写 max_attempts 时的保守取值 = 1（不重检）。
+    """不显式传 max_attempts 时的保守取值 = 1（不重检）。
 
     不明确要求重检就不自作主张多打一枪——这条默认值必须由测试钉住，
-    否则将来有人把默认改成 2，直接调图的调用方会凭空多花一次 LLM 调用。
+    否则将来有人把默认改成 2，调用方会凭空多花一次 LLM 调用。
     """
     spy = _Spy()
-    graph = build_recall_graph(
+    out = asyncio.run(run_recall_guard(
         retrieve_fn=_make_retrieve(spy, best_distance=0.40),
         format_fn=lambda cands: f"[{len(cands)} 块]检索上下文",
         llm_fn=_make_llm(spy, "insufficient", "改写"),
         api_key=API_KEY,
-    )
-    final = asyncio.run(graph.ainvoke(
-        {"query": "测试问题", "current_query": "测试问题", "attempt": 0}
+        query="测试问题",
     ))
 
     assert spy.retrieve == 1 and spy.llm == 1
-    assert final.get("context") == REFUSE_TEXT
+    assert out == REFUSE_TEXT
 
 
 def test_判官永远不充分也能停住():
     """终止性回归测试。
 
-    LangGraph 1.2.10 的 `recursion_limit` 默认是 10007（不是旧版的 25），
-    靠它兜底等于没有兜底——真跑飞会空转到一万步、每圈都在烧 LLM。
-    真正的终止条件是 state 里的 attempt 计数器，本用例把 max_attempts 放大到 5
-    验证它确实按计数停，而不是靠外层兜底。
+    改手写之前这里靠 LangGraph 的 `recursion_limit` 兜底，但它的默认值是 10007
+    （不是旧版的 25），等于没有兜底——真跑飞会空转到一万步、每圈都在烧 LLM。
+    现在**唯一**的终止条件就是 attempt 计数器（循环上界由它直接决定），
+    本用例把 max_attempts 放大到 5，验证它确实按计数停。
     """
     spy = _Spy()
     _run(_make_retrieve(spy, best_distance=0.40),
@@ -311,11 +310,12 @@ def test_判官抛异常时放行():
     assert out == "[1 块]检索上下文"
 
 
-def test_判官返回非白名单判定不会炸path_map():
-    """_branch.py 是 self.ends[r]，返回 path_map 以外的 key 直接 KeyError。
+def test_判官返回非白名单判定不会炸():
+    """非法判定必须在 _parse_verdict 就被归一化成 sufficient。
 
-    路由函数里每个 return 都是字面量，非法判定在 _parse_verdict 就被归一化成
-    sufficient，所以永远走不到 path_map 之外。
+    改手写之前这条最关键：路由函数返回 path_map 以外的 key 会直接 KeyError，
+    而 SSE 侧没有 try/except，会打断整条流。现在 return 就是 return，
+    但「判定值白名单」这层仍要守住——非白名单判定落到下面只会当成 insufficient。
     """
     spy = _Spy()
     out = _run(_make_retrieve(spy, best_distance=0.40), _make_llm(spy, "MAYBE"))

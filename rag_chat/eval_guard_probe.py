@@ -21,7 +21,7 @@ eval_guard_probe.py — 召回自检能力探测（硬负例 + 正例，真实�
 耗时口径：每组首个查询会背上 embedding 模型加载（实测约 12s），所以先跑一次预热，
 下面的 per-question 耗时才是自检本身的成本。
 
-只打检索层（`_search_knowledge_base`）——自检图就在这一层，结果是确定性的、可复现的。
+只打检索层（`_search_knowledge_base`）——召回自检就在这一层，结果是确定性的、可复现的。
 加 `--answers` 再跑一遍完整 AgentLoop，看最终回答是不是真的拒答而非编造（花 LLM 调用）。
 
 用法:
@@ -183,7 +183,7 @@ async def main() -> None:
     # 不预热的话每组的第一题都会背上这笔一次性开销，耗时均值没法看。
     t0 = time.perf_counter()
     _search_knowledge_base("河南工学院")
-    print(f"\n（预热完成 {time.perf_counter() - t0:.1f}s：embedding 模型 + BM25 索引 + 自检图）")
+    print(f"\n（预热完成 {time.perf_counter() - t0:.1f}s：embedding 模型 + BM25 索引 + 召回自检）")
 
     rows = []
     for kind, group in (("硬负例", HARD_NEGATIVE), ("灰区", GRAY),
