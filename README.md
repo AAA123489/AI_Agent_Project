@@ -629,11 +629,19 @@ python -m pytest tests/ -v      # 147 条，零网络
 | 测试文件 | 条数 | 内容 |
 |---|---|---|
 | `test_recall_guard.py` | 30 | 召回自检：快通过 / 三种去向 / 环 / **终止性** / 判官故障兜底 |
+| `test_upload_lifecycle.py` | 29 | 上传文档的生命周期：入库后可见、可 `DELETE` 撤销（读临时 Chroma） |
+| `test_vector_store.py` | 20 | `VectorStore` 增删查、相似度检索（读临时 Chroma） |
+| `test_mcp_tools.py` | 17 | MCP 三工具，mock 掉 `VectorStore`，不依赖 ChromaDB / Embedding |
+| `test_text_splitter.py` | 15 | 递归切分器（含 `sanitize_privacy` 隐私脱敏） |
 | `test_stream_gate.py` | 10 | 首句净化：逐字喂与整段喂结果一致（切片边界不影响） |
 | `test_hybrid_retriever.py` | 9 | RRF 融合保留 `vector_distance`，含「BM25 第一名污染 distance」机理 |
 | `test_out_of_kb_guard.py` | 8 | 库外闸门两层各自的分工（纯字符串） |
+| `test_scraper_pagination.py` | 5 | 爬虫分页 URL 拼接回归 |
 | `test_q6_rewrite_integration.py` | 4 | **假 LLM 端到端**复现「LLM 改写掉校名」这条路径 |
-| 其余（MCP 工具 / 向量库 / 切分器 / 爬虫分页） | 57 | 单元测试 |
+
+> 这张表原先漏了 `test_upload_lifecycle.py`（29 条），末行用「其余 57 条」一裹，
+> 加起来只有 118，而正文写的是 147——**表比实际少 29，正好是漏掉的那一份**。
+> 现在逐文件列全，合计 = `pytest --collect-only` 的 147。
 
 **三个设计上的讲究**：
 
