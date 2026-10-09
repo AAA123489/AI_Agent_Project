@@ -1,4 +1,4 @@
-"""测试 MCP 工具函数 —— search_knowledge_base / ingest_file / list_sources。
+"""测试 MCP 工具函数 —— search_knowledge_base / list_sources。
 
 所有测试通过 mock VectorStore 实现，不依赖 ChromaDB 或 Embedding 模型。
 """
@@ -18,7 +18,6 @@ def _make_mock_vector_store(**overrides):
     """
     vs = MagicMock()
     vs.count.return_value = overrides.get("count", 5)
-    vs.count_by_source.return_value = overrides.get("count_by_source", 3)
     vs.search_similar.return_value = overrides.get(
         "search_similar",
         [
@@ -55,7 +54,7 @@ def mock_vs():
 
     search_knowledge_base 已改为复用 app_backend._search_knowledge_base
     （混合检索），因此需要同时 patch app_backend 的 getter；
-    ingest_file / list_sources 仍走 mcp_server.tools 的 getter。
+    list_sources 仍走 mcp_server.tools 的 getter。
     """
     vs = _make_mock_vector_store()
     with (
@@ -123,111 +122,6 @@ class TestSearchKnowledgeBase:
 
         result = search_knowledge_base("测试")
         assert "失败" in result or "❌" in result
-
-
-# ── ingest_file ───────────────────────────────────────────────
-
-
-class TestIngestFile:
-    """文档入库工具"""
-
-    def test_empty_path(self, mock_vs):
-        from mcp_server.tools import ingest_file
-
-        result = ingest_file("")
-        assert "提供" in result and "路径" in result
-
-    def test_file_not_found(self, mock_vs):
-        from mcp_server.tools import ingest_file
-
-        result = ingest_file("/nonexistent/path/doc.txt")
-        assert "不存在" in result
-
-    def test_unsupported_format(self, mock_vs):
-        from mcp_server.tools import ingest_file
-
-        # 创建临时文件，但后缀不被支持
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:
-            f.write(b"test")
-            tmp_path = f.name
-
-        try:
-            result = ingest_file(tmp_path)
-            assert "不支持" in result
-        finally:
-            Path(tmp_path).unlink()
-
-    def test_ingest_success(self, mock_vs):
-        """正常入库流程（mock ingest_document 避免真实 Chroma 操作）"""
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
-            f.write("# Test\nHello World".encode())
-            tmp_path = f.name
-
-        with (
-            patch("mcp_server.tools.ingest_document") as mock_ingest,
-            patch("mcp_server.tools._get_vector_store", return_value=mock_vs),
-        ):
-            from mcp_server.tools import ingest_file
-
-            mock_vs.count_by_source.return_value = 0
-            mock_vs.count.side_effect = [5, 8]  # before → after
-
-            result = ingest_file(tmp_path)
-            assert "成功" in result
-            mock_ingest.assert_called_once()
-
-        Path(tmp_path).unlink()
-
-    def test_ingest_replaces_existing(self, mock_vs):
-        """已有旧数据时走覆盖模式"""
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
-            f.write(b"some content")
-            tmp_path = f.name
-
-        with (
-            patch("mcp_server.tools.ingest_document") as mock_ingest,
-            patch("mcp_server.tools._get_vector_store", return_value=mock_vs),
-        ):
-            from mcp_server.tools import ingest_file
-
-            mock_vs.count_by_source.return_value = 10  # 有 10 条旧数据
-            mock_vs.count.side_effect = [10, 15]
-
-            result = ingest_file(tmp_path)
-            assert "成功" in result
-            assert mock_vs.delete_by_source.called
-
-        Path(tmp_path).unlink()
-
-    def test_ingest_exception_handled(self, mock_vs):
-        """入库过程异常时不崩溃"""
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
-            f.write(b"content")
-            tmp_path = f.name
-
-        with (
-            patch("mcp_server.tools.ingest_document", side_effect=ValueError("解析失败")),
-            patch("mcp_server.tools._get_vector_store", return_value=mock_vs),
-        ):
-            from mcp_server.tools import ingest_file
-
-            mock_vs.count_by_source.return_value = 0
-            result = ingest_file(tmp_path)
-            assert "失败" in result
-
-        Path(tmp_path).unlink()
 
 
 # ── list_sources ──────────────────────────────────────────────

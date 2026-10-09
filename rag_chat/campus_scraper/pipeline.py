@@ -3,9 +3,7 @@ campus_scraper/pipeline.py — 核心桥接模块
 ===============================
 职责：
 - run_scrape_pipeline()    爬取 → 清洗 → 保存 .txt → 分块 → 嵌入 → ChromaDB
-- get_knowledge_base_stats()  从 ChromaDB 查询动态统计（含「用户上传」与差额）
-- ingest_uploaded_files()    处理前端上传的文件
-- remove_uploaded_file()     移除一篇用户上传的文档（爬虫语料拒删）
+- get_knowledge_base_stats()  从 ChromaDB 查询动态统计（含「来源不明」差额）
 """
 
 import asyncio
@@ -41,15 +39,6 @@ CHUNK_OVERLAP = 50
 
 # ── 知识库集合名（修复 bug：统一用 my_rag_collection） ──
 COLLECTION_NAME = "my_rag_collection"
-
-# ── 用户上传内容的分类标签 ──
-# 上传的文档和爬虫抓的文档同住在 my_rag_collection 里，靠这个 category 区分。
-# 它不在 CATEGORIES 里（那是 13 个爬虫分类），所以 get_knowledge_base_stats 里
-# 必须单独数一次——否则 total_chunks（整个 collection）会比 category_counts
-# 之和大出一截，而没人看得出来差在哪。2026-09-20 就是靠这个差额才发现
-# 有 5 篇测试上传的文档（378 块）在库里躺了半个月。
-UPLOAD_CATEGORY = "用户上传"
-
 
 def _save_clean_text(article: ArticleMetadata) -> Path:
     """将清洗后的文本保存到 scraped_docs/{category}/{title}.txt"""
@@ -247,18 +236,14 @@ def get_knowledge_base_stats(
         if count > 0:
             stats.category_counts[cat_name] = count
 
-    # ── 用户上传（不在 CATEGORIES 里，单独数） ──
-    stats.uploaded_chunks = vector_store.count_by_category(UPLOAD_CATEGORY)
-
     # ── 对不上的块数 ──
-    # total_chunks 是整个 collection，category_counts 只覆盖上面那 13 类 + 用户上传。
+    # total_chunks 是整个 collection，category_counts 只覆盖上面那 13 个爬虫分类。
     # 两者之差 > 0 就意味着库里有"来源不明"的内容（手工写入、旧分类残留、
     # 改了 category 标签的迁移……）。这个数正常应当是 0，一旦非 0 就是知识库
     # 被污染的信号，必须查——不能让它继续当个看不见的差额存在。
     stats.unaccounted_chunks = (
         stats.total_chunks
         - sum(stats.category_counts.values())
-        - stats.uploaded_chunks
     )
 
     # 去重统计文章数（按 source 字段）
@@ -273,135 +258,3 @@ def get_knowledge_base_stats(
         stats.total_articles = 0
 
     return stats
-
-
-async def ingest_uploaded_files(
-    file_paths: list[str],
-    vector_store: VectorStore | None = None,
-) -> dict:
-    """
-    处理用户上传的文件（PDF/DOCX/TXT/MD）。
-
-    复用项目现有的 document_parser。
-
-    返回: {"total_chunks": int, "files_processed": int, "errors": list}
-    """
-    # 延迟导入避免循环依赖
-    from document_parser import parse_pdf, parse_docx
-
-    if vector_store is None:
-        vector_store = VectorStore(
-            db_path=str(_PROJECT_ROOT / "chroma_db"),
-            collection_name=COLLECTION_NAME,
-        )
-
-    splitter = RecursiveTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-    )
-
-    total_chunks = 0
-    files_processed = 0
-    errors = []
-
-    for fp in file_paths:
-        try:
-            path = Path(fp)
-            ext = path.suffix.lower()
-
-            # ── 解析文件 ──
-            if ext == ".pdf":
-                text, meta = parse_pdf(str(path))
-            elif ext == ".docx":
-                text, meta = parse_docx(str(path))
-            elif ext in (".txt", ".md"):
-                text = path.read_text(encoding="utf-8", errors="replace")
-                meta = {"author": "unknown", "year": ""}
-            else:
-                errors.append(f"不支持的文件类型: {ext}")
-                continue
-
-            if not text.strip():
-                errors.append(f"文件无内容: {path.name}")
-                continue
-
-            # ── 隐私脱敏（删除个人手机号/邮箱，再分块） ──
-            text = sanitize_privacy(text)
-
-            # ── 分块 ──
-            chunks = splitter.split_text(text)
-            if not chunks:
-                continue
-
-            # ── 元数据 ──
-            metadatas = []
-            for _ in chunks:
-                metadatas.append({
-                    "source": path.name,
-                    "category": UPLOAD_CATEGORY,
-                    "source_site": "本地文件",
-                    "publish_date": datetime.now().strftime("%Y-%m-%d"),
-                    "url": f"file://{path.absolute()}",
-                    "author": meta.get("author", "unknown"),
-                    "year": meta.get("year", ""),
-                })
-
-            ids = [f"upload_{path.stem}_{i}" for i in range(len(chunks))]
-
-            # 先删旧数据（同源覆盖）
-            vector_store.delete_by_source(path.name)
-            vector_store.save_documents(
-                documents=chunks,
-                metadatas=metadatas,
-                ids=ids,
-            )
-            total_chunks += len(chunks)
-            files_processed += 1
-
-        except Exception as e:
-            logger.exception("文件处理失败: %s", fp)
-            errors.append(f"{Path(fp).name}: {e}")
-
-    return {
-        "total_chunks": total_chunks,
-        "files_processed": files_processed,
-        "errors": errors,
-    }
-
-
-async def remove_uploaded_file(
-    filename: str,
-    vector_store: VectorStore | None = None,
-) -> dict:
-    """
-    从知识库移除一篇用户上传的文档（按 source 名，即文件名）。
-
-    安全约束：只删 category == UPLOAD_CATEGORY 的块。爬虫抓来的正文一律拒删——
-    一个 DELETE 请求不该有能力抹掉学校官网的语料，否则误删就是不可逆的
-    （chroma_db 没有备份）。
-
-    返回: {"found": bool, "deleted_chunks": int, "filename": str}
-    抛出: ValueError —— 该 source 存在但不是用户上传的
-    """
-    if vector_store is None:
-        vector_store = VectorStore(
-            db_path=str(_PROJECT_ROOT / "chroma_db"),
-            collection_name=COLLECTION_NAME,
-        )
-
-    got = vector_store.collection.get(where={"source": filename})
-    ids = got.get("ids") or []
-    if not ids:
-        return {"found": False, "deleted_chunks": 0, "filename": filename}
-
-    metas = got.get("metadatas") or []
-    cats = {(m or {}).get("category") for m in metas}
-    if cats != {UPLOAD_CATEGORY}:
-        raise ValueError(
-            f"「{filename}」不是用户上传的文档"
-            f"（category={sorted(c for c in cats if c)}），拒绝删除"
-        )
-
-    vector_store.collection.delete(ids=ids)
-    logger.info("已移除用户上传文档 %s（%d 块）", filename, len(ids))
-    return {"found": True, "deleted_chunks": len(ids), "filename": filename}

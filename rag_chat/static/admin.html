@@ -88,28 +88,6 @@
   }
   .chip b { color: var(--text); font-weight: 600; }
 
-  /* ════ 上传 ════ */
-  .upload-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .upload-controls input[type="file"] { color: var(--text-dim); font-size: 13px; }
-  .upload-controls input[type="file"]::file-selector-button {
-    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
-    background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer; margin-right: 10px;
-  }
-  .summary-line { font-size: 12px; color: var(--text-dim); margin-top: 12px; }
-  .file-list { list-style: none; margin-top: 12px; }
-  .file-list li {
-    padding: 8px 12px; border-radius: 8px; background: var(--bg);
-    border: 1px solid var(--border); margin-bottom: 6px;
-    font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  }
-  .file-row.pending { color: var(--text-dim); }
-  .file-row.uploading { color: var(--warn); }
-  .file-row.ok { color: var(--success); }
-  .file-row.partial { color: var(--warn); }
-  .file-row.fail { color: var(--accent); }
-  .file-row .fname { color: var(--text); word-break: break-all; flex: 1; min-width: 150px; }
-  .file-row .ferrors { font-size: 11px; color: var(--text-dim); width: 100%; }
-
   /* ════ 爬虫 ════ */
   .scrape-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .scrape-controls label { font-size: 13px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
@@ -201,21 +179,7 @@
     <div class="chip-grid" id="categoryChips"></div>
   </section>
 
-  <!-- 区块2：上传文档（需解锁） -->
-  <section class="card" id="uploadSection">
-    <div class="section-header">
-      <h2>上传文档</h2>
-      <span class="locked-hint" id="uploadLockedHint" hidden>⚠ 请先在上方解锁</span>
-    </div>
-    <div class="upload-controls">
-      <input type="file" id="fileInput" multiple accept=".txt,.md,.pdf,.docx">
-      <button class="btn-accent" id="uploadBtn" disabled>上传</button>
-    </div>
-    <div class="summary-line" id="uploadSummary"></div>
-    <ul class="file-list" id="uploadList"></ul>
-  </section>
-
-  <!-- 区块3：爬虫更新（需解锁） -->
+  <!-- 区块2：爬虫更新（需解锁） -->
   <section class="card" id="scrapeSection">
     <div class="section-header">
       <h2>爬虫更新</h2>
@@ -252,8 +216,6 @@
 // ═══════════════════════════════════════
 const API_BASE = window.location.protocol === 'file:' ? 'http://127.0.0.1:8000' : '';
 const KEY_STORAGE = 'rag_admin_api_key';
-const ALLOWED_EXT = ['.txt', '.md', '.pdf', '.docx'];
-const MAX_SIZE = 20 * 1024 * 1024;
 
 let currentKey = '';
 let globalBusy = false;
@@ -311,10 +273,10 @@ function flashUnlock() {
   setTimeout(() => bar.classList.remove('flash'), 2500);
 }
 
-function requireUnlocked(sectionId) {
+function requireUnlocked() {
   if (currentKey) return true;
   flashUnlock();
-  const hint = sectionId === 'uploadSection' ? $('uploadLockedHint') : $('scrapeLockedHint');
+  const hint = $('scrapeLockedHint');
   hint.hidden = false;
   setTimeout(() => { hint.hidden = true; }, 2500);
   return false;
@@ -379,125 +341,11 @@ function renderStatsError(msg) {
 }
 
 // ═══════════════════════════════════════
-// 上传文档
-// ═══════════════════════════════════════
-function validateFile(file) {
-  const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
-  if (!ALLOWED_EXT.includes(ext)) return { ok: false, reason: '仅支持 .txt/.md/.pdf/.docx' };
-  if (file.size === 0) return { ok: false, reason: '空文件' };
-  if (file.size > MAX_SIZE) return { ok: false, reason: '超过 20MB 上限' };
-  return { ok: true };
-}
-
-function handleFileSelect() {
-  const list = $('uploadList');
-  list.textContent = '';
-  $('uploadSummary').textContent = '';
-  const files = $('fileInput').files;
-  let validCount = 0;
-  Array.from(files).forEach(file => {
-    const li = document.createElement('li');
-    li.className = 'file-row pending';
-    const name = document.createElement('span');
-    name.className = 'fname';
-    name.textContent = file.name;
-    const st = document.createElement('span');
-    li.append(name, st);
-    li._file = file;
-    const v = validateFile(file);
-    if (v.ok) {
-      validCount++;
-      st.textContent = '待上传';
-    } else {
-      li.classList.add('fail');
-      st.textContent = '❌ ' + v.reason;
-    }
-    list.appendChild(li);
-  });
-  $('uploadBtn').disabled = validCount === 0;
-}
-
-function setUploadRow(row, state, text) {
-  row.className = 'file-row ' + state;
-  row.querySelector('span:last-child').textContent = text;
-}
-
-async function uploadOne(file) {
-  const formData = new FormData();
-  formData.append('file', file);
-  const res = await fetch(API_BASE + '/upload', {
-    method: 'POST',
-    headers: { 'X-API-Key': currentKey },
-    body: formData,
-  });
-  if (res.status === 401) throw Object.assign(new Error('KEY_INVALID'), { code: 'KEY_INVALID' });
-  let body = {};
-  try { body = await res.json(); } catch (e) {}
-  if (res.status === 200) return { ok: true, chunks: body.chunks };
-  if (res.status === 207) return { partial: true, chunks: body.chunks, errors: body.errors || [] };
-  return { failed: body.detail || ('上传失败 (' + res.status + ')') };
-}
-
-async function startUpload() {
-  if (globalBusy) return;
-  if (!requireUnlocked('uploadSection')) return;
-  const rows = Array.from($('uploadList').children).filter(r => r._file && validateFile(r._file).ok);
-  if (!rows.length) { showToast('没有可上传的文件', 'err'); return; }
-
-  globalBusy = true;
-  const btn = $('uploadBtn');
-  btn.disabled = true;
-  btn.textContent = '⏳ 上传中…';
-  let okCount = 0, partialCount = 0, failCount = 0;
-
-  for (const row of rows) {
-    setUploadRow(row, 'uploading', '上传中…');
-    try {
-      const result = await uploadOne(row._file);
-      if (result.ok) {
-        okCount++;
-        setUploadRow(row, 'ok', '✅ 入库 ' + result.chunks + ' 块');
-      } else if (result.partial) {
-        partialCount++;
-        setUploadRow(row, 'partial', '⚠️ 部分入库 ' + result.chunks + ' 块');
-        const ferr = document.createElement('div');
-        ferr.className = 'ferrors';
-        ferr.textContent = (result.errors || []).slice(0, 3).join('；');
-        row.appendChild(ferr);
-      } else {
-        failCount++;
-        setUploadRow(row, 'fail', '❌ ' + (result.failed || '失败'));
-      }
-    } catch (err) {
-      if (err.code === 'KEY_INVALID') {
-        failCount++;
-        setUploadRow(row, 'fail', '❌ API Key 无效');
-        Array.from($('uploadList').children).slice(rows.indexOf(row) + 1).forEach(r => {
-          setUploadRow(r, 'fail', '已跳过');
-        });
-        handleApi401();
-        break;
-      }
-      failCount++;
-      setUploadRow(row, 'fail', '❌ 无法连接服务');
-    }
-  }
-
-  $('uploadSummary').textContent =
-    `成功 ${okCount} · 部分 ${partialCount} · 失败 ${failCount}`;
-  $('fileInput').value = '';
-  $('uploadBtn').textContent = '上传';
-  $('uploadBtn').disabled = true;
-  globalBusy = false;
-  fetchKbStats();
-}
-
-// ═══════════════════════════════════════
 // 爬虫更新
 // ═══════════════════════════════════════
 function openScrapeConfirm() {
   if (globalBusy) return;
-  if (!requireUnlocked('scrapeSection')) return;
+  if (!requireUnlocked()) return;
   let pages = parseInt($('scrapePages').value, 10);
   if (!pages || pages < 1) pages = 1;
   if (pages > 10) pages = 10;
@@ -527,9 +375,7 @@ async function startScrape() {
   closeScrapeConfirm();
   globalBusy = true;
   const scrapeBtn = $('scrapeBtn');
-  const uploadBtn = $('uploadBtn');
   scrapeBtn.disabled = true;
-  uploadBtn.disabled = true;
   scrapeBtn.textContent = '⏳ 运行中…';
   $('scrapeStatus').hidden = false;
   $('scrapeStatus').classList.add('pulse');
@@ -545,7 +391,6 @@ async function startScrape() {
 
   globalBusy = false;
   scrapeBtn.disabled = false;
-  uploadBtn.disabled = false;
   scrapeBtn.textContent = '开始抓取';
   $('scrapeStatus').hidden = true;
   $('scrapeStatus').classList.remove('pulse');
@@ -596,8 +441,6 @@ $('unlockInput').addEventListener('keydown', e => { if (e.key === 'Enter') handl
 $('reenterKey').addEventListener('click', handleReenter);
 $('forgetKey').addEventListener('click', handleForget);
 $('refreshStatsBtn').addEventListener('click', fetchKbStats);
-$('fileInput').addEventListener('change', handleFileSelect);
-$('uploadBtn').addEventListener('click', startUpload);
 $('scrapeBtn').addEventListener('click', openScrapeConfirm);
 $('scrapeCancelBtn').addEventListener('click', closeScrapeConfirm);
 $('scrapeConfirmBtn').addEventListener('click', startScrape);

@@ -61,7 +61,7 @@
 |------|------|
 | 🕷️ 网站爬取 | aiohttp 异步爬虫，动易/JSP CMS 适配，SQLite 断点续爬，限速模拟真人 |
 | 🔒 隐私脱敏 | 入库前删除个人手机号 / 邮箱，**保留办公室座机**（`sanitize_privacy`） |
-| 📄 文档解析 | TXT / MD / DOCX / PDF；PDF **表格结构化提取** + **扫描件 OCR 兜底** |
+| 📄 文档解析 | TXT / MD（爬虫落盘语料的 header 解析 + 正文回读） |
 | ✂️ 智能分块 | 补充递归切分器（段落→句子→标点），重叠窗口，参数经消融定型 |
 | 🔢 混合检索 | 向量 + BM25 双路召回，**RRF 名次融合**（`k=60`） |
 | 🎯 检索增强 | 年份过滤、文本去重、罕见词精确兜底、同文档补块 |
@@ -72,8 +72,8 @@
 | 💬 流式对话 | SSE 逐 delta 推送，答案附 📎 参考来源（日期 · 文件名 · 🔗 原文） |
 | 🧠 多轮记忆 | Redis `LPUSH` + `EXPIRE` 30 分钟，Redis 挂掉静默降级 |
 | ⚡ 查询缓存 | 相同问题复用上次答案（Redis，TTL 1 小时），知识库更新后自动清空 |
-| 🔧 MCP 工具 | 3 个工具通过 MCP 协议暴露给外部 Agent |
-| 🔐 安全 | X-API-Key 鉴权（`hmac` 恒时比较）、历史长度/字数上限、上传白名单 |
+| 🔧 MCP 工具 | 2 个**只读**工具通过 MCP 协议暴露给外部 Agent |
+| 🔐 安全 | X-API-Key 鉴权（`hmac` 恒时比较）、历史长度/字数上限 |
 | 🧪 消融实验 | `crawl_ablation.py` 按量爬取 + `rebuild_kb.py` 参数化重建 + 评测脚本 |
 
 ---
@@ -144,7 +144,7 @@ LLM 生成（SSE 逐 delta 下发，经「首句净化」闸门）
 | 编排 | 全手写：ReAct 工具循环（`AgentLoop`）+ 召回自检判定循环 |
 | LLM | DeepSeek（Anthropic 兼容 Tool Use 格式） |
 | 记忆 / 缓存 | Redis 7 |
-| 文档解析 | pypdf + pdfplumber + RapidOCR + python-docx |
+| 网页解析 | BeautifulSoup + lxml（HTML → 纯文本，按栏目配选择器） |
 | MCP | mcp 1.28 |
 | 前端 | 原生 HTML/CSS/JS（`static/chat.html`、`admin.html`） |
 
@@ -193,7 +193,6 @@ cp .env.example .env
 python crawl_ablation.py 通知公告 1 10
 
 # ② 全量爬取：前端管理面板点「刷新爬虫」，或 POST /scrape/start（较慢）
-# ③ 上传文档：前端「上传文档」，或 POST /upload（.txt / .md / .pdf / .docx）
 ```
 
 ### 4. 启动
@@ -220,15 +219,13 @@ python -m pytest tests/ -v      # 147 条，零网络
 | GET | `/` | 聊天前端页面 | — |
 | GET | `/health` | 健康检查（含 `kb_chunks`） | — |
 | POST | `/chat` | SSE 流式对话 | ✅ |
-| POST | `/upload` | 文档上传入库（multipart） | ✅ |
-| DELETE | `/upload/{文件名}` | 移除一篇已上传文档（爬虫语料拒删，403） | ✅ |
 | POST | `/scrape` | 触发爬虫（确认） | ✅ |
 | POST | `/scrape/start` | 实际执行爬虫 | ✅ |
-| GET | `/kb-stats` | 知识库统计（含 `uploaded_chunks` / `unaccounted_chunks`） | — |
+| GET | `/kb-stats` | 知识库统计（含 `unaccounted_chunks`） | — |
 
-> `unaccounted_chunks` 正常**恒为 0**：它统计"既不属于 13 个爬虫分类、也不属于
-> 用户上传"的块。非 0 就说明库里有来源不明的内容，别放过——上传的文档和爬虫
-> 语料同住一个 collection，靠这个差额才看得出有没有东西混进来。
+> `unaccounted_chunks` 正常**恒为 0**：它统计"不属于任何爬虫分类"的块。
+> 非 0 就说明库里有来源不明的内容，别放过——所有东西都同住一个 collection，
+> 靠这个差额才看得出有没有东西混进来。
 
 **`POST /chat` 请求示例**：
 
@@ -503,22 +500,18 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 **消融纪律**：一次只改一个参数，用同一组问题对比；每次重建会**清空** ChromaDB；
 对话日志按 `EXPERIMENT_TAG` 分文件，每条记录自动附带当前模型/温度/上限/`top_k`。
 
-### 7. 文档解析：表格结构化 + OCR 兜底
+### 7. 文档解析
+
+知识库内容**全部来自爬虫**，入口只有一条：官网 HTML。
 
 | 格式 | 处理 |
 |---|---|
-| TXT / MD | 直读 |
-| DOCX | `python-docx`，段落 + 表格 |
-| HTML | BeautifulSoup + lxml（爬虫链路） |
-| PDF 正文 | `pypdf` 提取线性文本 |
-| **PDF 表格** | `pdfplumber` 结构化提取，每行展开为 `单元格 \| 单元格 \| …`，用 `【表格N】` 标记插入正文 |
-| **扫描件 / 图片型页** | 提取不到文本的页 → 渲染成图 → **RapidOCR 中文识别**，标记 `【OCR识别·第N页】` |
+| HTML | BeautifulSoup + lxml，按栏目配选择器（`campus_scraper/html_parser.py`） |
+| TXT（落盘语料） | 直读，解析 header（标题 / 日期 / 来源 / 分类 / 原文链接）后回读正文 |
 
-> 为什么加表格和 OCR：校园通知里**大量关键信息在表格中**（分数线、时间安排、名单），
-> `pypdf` 只提取线性文本会把表格拍平成一串无结构字符，答案里的数字就对不上了。
-> 而学校历史通知有不少是**扫描件**，没有文本层。OCR 引擎**懒加载**（首次遇到才加载）。
-
-上传白名单：`.txt / .md / .pdf / .docx`。
+> **历史**：曾经还有一条"用户上传文档"的通路（PDF 表格 `pdfplumber` 结构化提取 +
+> 扫描件 RapidOCR 兜底 + DOCX `python-docx`）。2026-10 整条撤掉，见
+> `docs/改进记录.md` 第 21 条。
 
 ### 8. 多轮记忆与查询缓存
 
@@ -534,18 +527,19 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 理由是校园问答的问题**独立性高**（「报名截止时间」就是那个答案），命中率优先。
 代价是同一问题在不同上下文下会拿到同一个缓存答案——对这个场景可接受。
 
-**缓存失效**：知识库内容变化（上传文档 / 爬虫入库成功）后调 `_flush_query_cache()`，
+**缓存失效**：知识库内容变化（爬虫入库成功）后调 `_flush_query_cache()`，
 按前缀 `rag:answer:v2:*` 用 **`scan_iter` 逐一删除**（不用 `KEYS`，避免阻塞 Redis）。
 
 ### 9. MCP 工具与安全
 
-**MCP**（`mcp_server/`）暴露 3 个工具，供外部 Agent 调用：
+**MCP**（`mcp_server/`）暴露 2 个**只读**工具，供外部 Agent 调用：
 
 | 工具 | 作用 |
 |---|---|
 | `search_knowledge_base(query, top_k=5)` | 混合检索，**与聊天链路共用 `app_backend._search_knowledge_base`**，保证外部 Agent 与站内问答行为一致 |
 | `list_sources()` | 列出知识库所有文档来源及块数 |
-| `ingest_file(file_path)` | 解析 → 切分 → 入库 |
+
+> 两个工具都只读：知识库的写入通路只有爬虫一条，外部 Agent 无法借 MCP 往库里塞东西。
 
 **注册**（配置**不在本仓库里**，原因见「踩过的坑」）：
 
@@ -563,7 +557,6 @@ cwd 和模块搜索路径上，而 `claude mcp add` **没有 `--cwd` 参数**；
 |---|---|
 | 接口鉴权 | `X-API-Key` header，用 `hmac.compare_digest` **恒时比较**（防时序侧信道） |
 | 输入校验 | 历史条数 / 总字数上限（`MAX_HISTORY_TURNS=10` / `MAX_HISTORY_CHARS=2000`） |
-| 上传校验 | 扩展名白名单 |
 | 隐私 | 入库前脱敏 + Prompt 层禁止输出个人联系方式 |
 | 爬虫 | 限速，不打挂目标站；只爬公开信息 |
 | 免责 | 前端标注「个人学习项目，非官方应用」 |
@@ -623,25 +616,24 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 147 条，零网络
+python -m pytest tests/ -v      # 112 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
 |---|---|---|
 | `test_recall_guard.py` | 30 | 召回自检：快通过 / 三种去向 / 环 / **终止性** / 判官故障兜底 |
-| `test_upload_lifecycle.py` | 29 | 上传文档的生命周期：入库后可见、可 `DELETE` 撤销（读临时 Chroma） |
 | `test_vector_store.py` | 20 | `VectorStore` 增删查、相似度检索（读临时 Chroma） |
-| `test_mcp_tools.py` | 17 | MCP 三工具，mock 掉 `VectorStore`，不依赖 ChromaDB / Embedding |
 | `test_text_splitter.py` | 15 | 递归切分器（含 `sanitize_privacy` 隐私脱敏） |
+| `test_mcp_tools.py` | 11 | MCP 两个只读工具，mock 掉 `VectorStore`，不依赖 ChromaDB / Embedding |
 | `test_stream_gate.py` | 10 | 首句净化：逐字喂与整段喂结果一致（切片边界不影响） |
 | `test_hybrid_retriever.py` | 9 | RRF 融合保留 `vector_distance`，含「BM25 第一名污染 distance」机理 |
 | `test_out_of_kb_guard.py` | 8 | 库外闸门两层各自的分工（纯字符串） |
 | `test_scraper_pagination.py` | 5 | 爬虫分页 URL 拼接回归 |
 | `test_q6_rewrite_integration.py` | 4 | **假 LLM 端到端**复现「LLM 改写掉校名」这条路径 |
 
-> 这张表原先漏了 `test_upload_lifecycle.py`（29 条），末行用「其余 57 条」一裹，
-> 加起来只有 118，而正文写的是 147——**表比实际少 29，正好是漏掉的那一份**。
-> 现在逐文件列全，合计 = `pytest --collect-only` 的 147。
+> 合计 = `pytest --collect-only` 的 112。**表要逐文件列全，不能拿"其余 N 条"一裹**——
+> 曾经这么裹过一次，漏掉的正好是一整个文件（29 条），表里的和顺口写的数字差了 29，
+> 而没人看得出差在哪。逐文件列全，加不起来就会当场暴露。
 
 **三个设计上的讲究**：
 
@@ -738,7 +730,7 @@ No MCP servers configured.
 ### 静默空库：换了个 cwd，检索开始返回空
 
 **现象**：MCP server 由客户端以**未知 cwd** 拉成子进程。而 MCP 这条链
-（`mcp_server/tools.py` → `rag_pipeline.py`）是唯一**不传 `db_path`** 的，
+（`mcp_server/tools.py`）是唯一**不传 `db_path`** 的，
 于是落到 `VectorStore` 的默认值上。
 
 **根因**：那个默认值原本写作相对路径 `"./chroma_db"`。而 chromadb 的
@@ -799,8 +791,6 @@ rag_chat/
 │   ├── scraper.py          # aiohttp 异步爬虫（分页、限速、重试）
 │   └── pipeline.py         # 爬取→脱敏→落盘→分块→嵌入→ChromaDB
 ├── text_splitter.py        # 自研递归切分器 + sanitize_privacy 隐私脱敏
-├── document_parser.py      # PDF（表格 + OCR）/ DOCX / HTML 解析
-├── rag_pipeline.py         # 单文档入库流水线
 ├── crawl_ablation.py       # 消融：按分类 + 条数爬取并脱敏落盘
 ├── rebuild_kb.py           # 消融：从 scraped_docs 按参数重建知识库
 ├── eval_baseline.py        # 评测：6 题基准真实链路（检索 + LLM）
@@ -809,8 +799,8 @@ rag_chat/
 ├── mcp_server/             # MCP 协议服务（暴露给外部 Agent）
 ├── static/
 │   ├── chat.html           # 聊天前端（SSE 流式 + 参考来源卡片）
-│   └── admin.html          # 管理面板（爬虫 / 上传 / 库统计）
-├── tests/                  # pytest 147 条
+│   └── admin.html          # 管理面板（爬虫 / 库统计）
+├── tests/                  # pytest 112 条
 ├── docs/                   # 改进记录 / 设计文档
 ├── requirements.txt
 └── .env.example

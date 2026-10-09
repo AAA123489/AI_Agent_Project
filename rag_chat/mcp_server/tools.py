@@ -3,9 +3,7 @@
 每个工具函数都是同步的（MCP SDK 会在 async 上下文中通过 to_thread 调用）。
 返回字符串，由 MCP 协议层包装为 TextContent。
 """
-import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -15,20 +13,11 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src.vector_store import VectorStore  # noqa: E402
-from rag_pipeline import ingest_document  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 # ── VectorStore 单例（所有工具共享，只加载一次 420MB 模型）──
 _vector_store: VectorStore | None = None
-_lock: asyncio.Lock | None = None  # asyncio 锁，延迟创建
-
-
-def _get_lock() -> asyncio.Lock:
-    global _lock
-    if _lock is None:
-        _lock = asyncio.Lock()
-    return _lock
 
 
 def _get_vector_store() -> VectorStore:
@@ -76,62 +65,6 @@ def search_knowledge_base(query: str, top_k: int = 5) -> str:
         return f"❌ 检索失败: {e}"
 
 
-def ingest_file(file_path: str) -> str:
-    """将本地文档（TXT/MD/PDF）解析、切分后存入知识库。
-
-    支持幂等入库：同一文件重复入库时会先删除旧数据再写入。
-
-    Args:
-        file_path: 文档的绝对路径或相对于项目根目录的路径
-
-    Returns:
-        入库结果摘要（切分块数、总文档数等）
-    """
-    if not file_path:
-        return "⚠️ 请提供文件路径。"
-
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = _project_root / path
-
-    if not path.exists():
-        return f"❌ 文件不存在: {path}"
-
-    suffix = path.suffix.lower()
-    if suffix not in (".txt", ".md", ".pdf"):
-        return f"❌ 不支持的文件格式: {suffix}。支持: .txt / .md / .pdf"
-
-    try:
-        vs = _get_vector_store()
-        file_path_str = str(path)
-
-        # 幂等处理：先删除同文件的旧数据
-        existing_count = vs.count_by_source(file_path_str)
-        if existing_count > 0:
-            vs.delete_by_source(file_path_str)
-            logger.info("覆盖模式：已删除旧数据 %d 条", existing_count)
-
-        total_before = vs.count()
-
-        # 同步入库（ingest_document 内部调用切分器 + Chroma）
-        ingest_document(file_path_str, vector_store=vs)
-
-        total_after = vs.count()
-        new_chunks = total_after - total_before
-
-        return (
-            f"✅ 文档入库成功\n"
-            f"文件: {path.name}\n"
-            f"新增块数: {new_chunks}\n"
-            f"知识库总块数: {total_after}"
-            + (f"\n(覆盖模式: 替换了原有的 {existing_count} 条旧数据)" if existing_count > 0 else "")
-        )
-
-    except Exception as e:
-        logger.exception("ingest_file 执行失败")
-        return f"❌ 入库失败: {e}"
-
-
 def list_sources() -> str:
     """列出知识库中所有文档来源及其块数。
 
@@ -143,7 +76,7 @@ def list_sources() -> str:
         total = vs.count()
 
         if total == 0:
-            return "📭 知识库为空，还没有入库任何文档。使用 ingest_file 添加文档。"
+            return "📭 知识库为空，还没有入库任何文档。请先运行爬虫管线入库。"
 
         # Chroma 没有直接「列出所有 source」的方法，
         # 通过 get() 获取全量 metadata 再统计

@@ -26,7 +26,6 @@ from mcp.server.stdio import stdio_server  # noqa: E402
 from mcp.types import TextContent, Tool  # noqa: E402
 
 from mcp_server.tools import (  # noqa: E402
-    ingest_file,
     list_sources,
     search_knowledge_base,
 )
@@ -73,24 +72,6 @@ async def handle_list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="ingest_file",
-            description=(
-                "将本地文档（TXT/Markdown/PDF）导入 RAG 知识库。"
-                "支持幂等入库：同一文件重复导入时自动覆盖旧数据。"
-                "使用场景：用户说「把这篇文档加到知识库」「导入 XX.pdf」时调用。"
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "本地文件路径，支持绝度路径或相对于项目根目录的路径。支持 .txt / .md / .pdf",
-                    },
-                },
-                "required": ["file_path"],
-            },
-        ),
-        Tool(
             name="list_sources",
             description=(
                 "列出 RAG 知识库中已有的所有文档来源及文档块数量。"
@@ -115,18 +96,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     logger.info("工具调用: %s, 参数: %s", name, arguments)
 
     # 所有工具函数是同步的，扔到线程池执行（避免阻塞事件循环）。
-    # 特别是 ingest_file 涉及文件 IO + Embedding 计算，不能阻塞 asyncio。
+    # 特别是 search_knowledge_base 涉及混合检索 + Embedding 计算，不能阻塞 asyncio。
     try:
         if name == "search_knowledge_base":
             result = await asyncio.to_thread(
                 search_knowledge_base,
                 query=arguments.get("query", ""),
                 top_k=arguments.get("top_k", 5),
-            )
-        elif name == "ingest_file":
-            result = await asyncio.to_thread(
-                ingest_file,
-                file_path=arguments.get("file_path", ""),
             )
         elif name == "list_sources":
             result = await asyncio.to_thread(list_sources)

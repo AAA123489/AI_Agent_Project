@@ -18,7 +18,7 @@
 | 🕷️ 网站爬取 | aiohttp 异步爬虫，动易/JSP CMS 适配，SQLite 去重，限速模拟真人 |
 | 🔒 隐私脱敏 | 删除个人手机号 / 邮箱，保留办公室座机（`sanitize_privacy`） |
 | ✂️ 智能分块 | 自研递归切分器（段落→句子→空格），重叠窗口，参数可调 |
-| 📄 文档解析 | TXT / MD / DOCX / PDF；PDF **表格结构化提取**（pdfplumber）+ **扫描件 OCR 兜底**（RapidOCR） |
+| 📄 网页解析 | HTML → 纯文本（动易/JSP CMS 适配，按栏目配选择器）；爬虫是唯一入库通路 |
 | 🔢 混合检索 | 向量 + BM25 双路召回 + **RRF 名次融合**（`k=60`）；年份过滤 / 文本去重 / 罕见词精确兜底 / 同文档补块 |
 | 🛡️ 召回自检 | 判定召回是否支撑回答，不支撑则**拒答**而非编造；不充分时改写 query 重检（`src/recall_guard.py`） |
 | 💬 SSE 流式对话 | Agent 循环 + 工具调用，答案附 📎 参考来源（日期·文件名·🔗查看原文） |
@@ -57,8 +57,6 @@ rag_chat/
 │   ├── scraper.py          # aiohttp 异步爬虫（分页、限速、重试）
 │   └── pipeline.py         # 爬取→脱敏→落盘→分块→嵌入→ChromaDB
 ├── text_splitter.py        # 自研递归切分器 + sanitize_privacy 隐私脱敏
-├── document_parser.py      # PDF / DOCX 解析
-├── rag_pipeline.py         # 单文档入库流水线
 ├── crawl_ablation.py       # 消融实验：按分类 + 条数爬取并脱敏落盘
 ├── rebuild_kb.py           # 消融实验：从 scraped_docs 按参数重建知识库
 ├── eval_baseline.py        # 评测：6 题基准真实链路（检索 + LLM）
@@ -101,11 +99,10 @@ python app_fastapi.py
 
 访问 http://127.0.0.1:8000 即聊天前端；健康检查 http://127.0.0.1:8000/health 返回 `kb_chunks`。
 
-### 3. 构建知识库（三选一）
+### 3. 构建知识库（二选一）
 
 - **全量爬取**：前端管理面板点「刷新爬虫」，或调用 `POST /scrape/start`（每类最多 N 页，较慢）
 - **按量实验爬取**：`python crawl_ablation.py 通知公告 1 10`（分类 + 页数 + 最多几篇，自动脱敏落盘到 `scraped_docs/`）
-- **上传文档**：前端「上传文档」或 `POST /upload`
 
 ## API 端点
 
@@ -114,11 +111,9 @@ python app_fastapi.py
 | GET | `/` | 聊天前端页面 |
 | GET | `/health` | 健康检查（含 `kb_chunks`） |
 | POST | `/chat` | SSE 流式对话（Body：`user_id` / `message` / `history`） |
-| POST | `/upload` | 文档上传入库（multipart `file`） |
-| DELETE | `/upload/{文件名}` | 移除一篇已上传文档（爬虫语料拒删，403） |
 | POST | `/scrape` | 触发爬虫（确认） |
 | POST | `/scrape/start` | 实际执行爬虫 |
-| GET | `/kb-stats` | 知识库统计（含 `uploaded_chunks` / `unaccounted_chunks`） |
+| GET | `/kb-stats` | 知识库统计（含 `unaccounted_chunks`） |
 
 `POST /chat` 请求示例：
 
@@ -273,13 +268,12 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 
 ## MCP 工具
 
-`mcp_server/` 通过 MCP 协议暴露三个工具，供项目二（手写 Agent）等外部 Agent 调用：
+`mcp_server/` 通过 MCP 协议暴露两个**只读**工具，供外部 Agent 调用：
 
 | 工具 | 作用 |
 |---|---|
 | `search_knowledge_base` | 混合检索（向量 + BM25 + RRF） |
 | `list_sources` | 列出知识库已有文档 |
-| `ingest_file` | 把文档入到知识库 |
 
 ### 注册方式
 
@@ -306,7 +300,7 @@ claude mcp add rag-knowledge-base -- python <仓库绝对路径>/rag_chat/mcp_se
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 147 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_upload_lifecycle.py 上传生命周期，均零网络；后者读临时 Chroma）
+python -m pytest tests/ -v      # 112 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端，均零网络；test_vector_store.py 读临时 Chroma）
 ```
 
 ## 许可证

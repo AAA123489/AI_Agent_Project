@@ -1,7 +1,7 @@
 """
 app_fastapi.py — FastAPI SSE 后端
 ================================
-校园百事通：对接 chat.html 纯前端，提供 SSE 流式对话 + 爬虫 + 上传接口。
+校园百事通：对接 chat.html 纯前端，提供 SSE 流式对话 + 爬虫接口。
 复用 app_backend.py 的全部核心逻辑（LLM 调用 / 工具执行 / 检索 / 爬虫）。
 """
 
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request, UploadFile, File, Header, Depends, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Request, Header, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from app_backend import (
     _get_vector_store,
-    get_kb_stats, ingest_files, delete_uploaded_file, is_valid_source_name,
+    get_kb_stats,
     run_scraper_pipeline, get_active_params,
     AgentLoop, ThinkingEvent, ToolCallEvent, ToolResultEvent,
     TextEvent, DoneEvent, ErrorEvent,
@@ -110,9 +110,6 @@ MAX_MESSAGE_CHARS = 8000
 # 历史上下文上限：防客户端传超长 history 撑爆 LLM 上下文（最多 20 轮、单条 2000 字）
 MAX_HISTORY_TURNS = 20
 MAX_HISTORY_MSG_CHARS = 2000
-# 上传白名单扩展名 + 大小上限（20MB）
-_ALLOWED_UPLOAD_EXT = {".txt", ".md", ".pdf", ".docx"}
-MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 # 查询级缓存：相同问题直接复用上次答案，省 DeepSeek 调用 + 检索。.env 可配 off / TTL
 QUERY_CACHE = os.getenv("QUERY_CACHE", "on").strip().lower() == "on"
 QUERY_CACHE_TTL = int(os.getenv("QUERY_CACHE_TTL", "3600"))
@@ -212,7 +209,7 @@ async def _cache_set(key: str, answer: str, sources: list, thinking: list) -> No
 async def _flush_query_cache() -> int:
     """知识库内容变化后清空查询缓存（旧答案可能已过时）。
 
-    上传新文档 / 爬虫入库成功后调用；扫描 `rag:answer:v2:*` 前缀逐一删除。
+    爬虫入库成功后调用；扫描 `rag:answer:v2:*` 前缀逐一删除。
     返回删除的 key 数；Redis 不可用或异常 → 0（降级，不影响主流程）。
     """
     if not _REDIS_AVAILABLE:
@@ -419,112 +416,6 @@ async def chat(req: ChatRequest, api_key: str = Depends(_verify_api_key)):
     )
 
 
-@app.post("/upload")
-async def upload(file: UploadFile = File(...), _: str = Depends(_verify_api_key)):
-    """文档上传入库（受保护：需服务端 API Key）"""
-    try:
-        # 扩展名白名单 + 防路径穿越（只取文件名部分，忽略目录前缀）
-        filename = Path(file.filename or "").name
-        ext = Path(filename).suffix.lower()
-        if not filename or ext not in _ALLOWED_UPLOAD_EXT:
-            return JSONResponse(
-                {"detail": f"不支持的文件类型「{ext or '未知'}」，仅支持 .txt/.md/.pdf/.docx"},
-                status_code=400,
-            )
-
-        content = await file.read()
-        if len(content) == 0:
-            return JSONResponse({"detail": "文件内容为空"}, status_code=400)
-        if len(content) > MAX_UPLOAD_SIZE:
-            return JSONResponse(
-                {"detail": f"文件过大（上限 {MAX_UPLOAD_SIZE // (1024 * 1024)}MB）"},
-                status_code=413,
-            )
-
-        # 保存临时文件
-        tmp_dir = _PROJECT_ROOT / "scraped_docs" / "_uploads"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = tmp_dir / filename
-        tmp_path.write_bytes(content)
-
-        try:
-            # 调用入库逻辑
-            result = await ingest_files([str(tmp_path)])
-            errs = result.get("errors", [])
-            chunks = result.get("total_chunks", 0)
-
-            # 知识库已变化（部分成功也变了），旧查询缓存可能过时，清空
-            await _flush_query_cache()
-
-            if errs:
-                return JSONResponse({
-                    "filename": filename,
-                    "chunks": chunks,
-                    "status": "partial",
-                    "errors": errs,
-                }, status_code=207)
-
-            return {
-                "filename": filename,
-                "chunks": chunks,
-                "status": "ok",
-            }
-        finally:
-            # 临时文件入库后立即删除，防 scraped_docs/_uploads 堆积
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                logger.warning("清理临时文件失败: %s", tmp_path, exc_info=True)
-    except Exception:
-        logger.exception("上传失败")
-        return JSONResponse({"detail": "上传处理失败，请检查文件格式后重试"}, status_code=500)
-
-
-@app.delete("/upload/{filename:path}")
-async def delete_upload(filename: str, _: str = Depends(_verify_api_key)):
-    """移除一篇已入库的用户上传文档（受保护）。
-
-    之前传错文件是**没法撤销的**——只能开 Python 手敲 col.delete()。
-    这里补上：按文件名删，同时清掉磁盘上的残留副本与旧查询缓存。
-    只对 category="用户上传" 生效，爬虫抓来的正文拒删（403）。
-
-    路径参数用 `:path` 而非默认转换器：爬虫语料的 source 是
-    `分类/标题.txt`（1194 篇**全部**带斜杠），默认转换器不跨 `/`，
-    请求会先 404，下面那道 403 安全闸门永远够不着、成了摆设。
-    收下整条路径，才能让"拒删爬虫语料"真正被触发（且被测试覆盖）。
-    """
-    if not is_valid_source_name(filename):
-        return JSONResponse({"detail": "文件名非法"}, status_code=400)
-
-    result = await delete_uploaded_file(filename)
-    status = result.get("status")
-
-    if status == "rejected":
-        # 爬虫语料：remove_uploaded_file 按 category 拦下，走这里
-        return JSONResponse({"detail": result.get("detail", "拒绝删除")}, status_code=403)
-    if status == "failed":
-        return JSONResponse({"detail": "删除失败，请稍后重试"}, status_code=500)
-    if status == "not_found":
-        return JSONResponse({"detail": f"知识库中没有「{filename}」"}, status_code=404)
-
-    # 磁盘残留副本（正常情况下 /upload 的 finally 已经删过了，这里是兜底）。
-    # 只取 basename，落在 _uploads/ 之内。
-    leftover = _PROJECT_ROOT / "scraped_docs" / "_uploads" / Path(filename).name
-    try:
-        leftover.unlink(missing_ok=True)
-    except Exception:
-        logger.warning("清理上传残留文件失败: %s", leftover, exc_info=True)
-
-    # 知识库已变化，旧查询缓存可能过时
-    await _flush_query_cache()
-
-    return {
-        "filename": filename,
-        "deleted_chunks": result.get("deleted_chunks", 0),
-        "status": "ok",
-    }
-
-
 @app.post("/scrape")
 async def scrape(pages: int = 2, _: str = Depends(_verify_api_key)):
     """触发爬虫（后台运行，返回任务确认信息；受保护）"""
@@ -590,8 +481,7 @@ async def scrape_start(background_tasks: BackgroundTasks, pages: int = 2, _: str
 async def kb_stats():
     """知识库统计
 
-    uploaded_chunks  —— category="用户上传" 的块数（走 /upload 进来的）
-    unaccounted_chunks —— 既不属于 13 个爬虫分类、也不属于用户上传的块数。
+    unaccounted_chunks —— 不属于 13 个爬虫分类的块数。
         正常永远是 0；非 0 就说明库里有来源不明的块，别放过。
     """
     try:
@@ -600,7 +490,6 @@ async def kb_stats():
             "total_articles": stats.get("total_articles", 0),
             "total_chunks": stats.get("total_chunks", 0),
             "category_counts": stats.get("category_counts", {}),
-            "uploaded_chunks": stats.get("uploaded_chunks", 0),
             "unaccounted_chunks": stats.get("unaccounted_chunks", 0),
         }
     except Exception:
