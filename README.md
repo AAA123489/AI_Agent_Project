@@ -1,14 +1,17 @@
 # RAG 智能知识库问答系统
 
 基于 **FastAPI + ChromaDB + DeepSeek** 的检索增强生成（RAG）问答后端。把河南工学院官网
-**1195 篇公开文档 / 13 个分类**变成可自然语言提问的知识库——答案**带出处**，
-检索不到就**拒答**而不是编造。
+**1195 篇公开文档 / 13 个分类**全量爬进知识库，变成可自然语言提问的问答系统——
+答案**附原文链接**，检索不到就**拒答**而不是编造。
+
+知识库**只由爬虫构建**：没有上传入口，1195 篇全部来自官网公开栏目，**每一块都能追溯到
+一个具体 URL**。系统因此可以说清自己知道什么、不知道什么——这正是它能放心拒答的前提。
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?style=flat&logo=fastapi&logoColor=white)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-147%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-112%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -30,7 +33,7 @@
   - [4. 库外拦截（两层校验）](#4-库外拦截两层校验)
   - [5. 首句净化](#5-首句净化)
   - [6. 分块与参数消融](#6-分块与参数消融)
-  - [7. 文档解析：表格结构化 + OCR 兜底](#7-文档解析表格结构化--ocr-兜底)
+  - [7. 文档解析](#7-文档解析)
   - [8. 多轮记忆与查询缓存](#8-多轮记忆与查询缓存)
   - [9. MCP 工具与安全](#9-mcp-工具与安全)
 - [评测](#评测)
@@ -207,7 +210,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 147 条，零网络
+python -m pytest tests/ -v      # 112 条，零网络
 ```
 
 ---
