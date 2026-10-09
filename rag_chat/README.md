@@ -4,10 +4,9 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.139+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Chroma](https://img.shields.io/badge/Chroma-vector--db-FF6B6B?style=flat&logo=chromadb&logoColor=white)](https://www.trychroma.com/)
 [![Redis](https://img.shields.io/badge/Redis-cache-DC382D?style=flat&logo=redis&logoColor=white)](https://redis.io/)
-[![MCP](https://img.shields.io/badge/MCP-protocol-6E3FF3?style=flat&logo=anthropic&logoColor=white)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
-基于 FastAPI + ChromaDB + DeepSeek 的 RAG 智能问答系统：爬取河南工学院官网公开信息 → 隐私脱敏 → 切分入库 → SSE 流式问答，支持 MCP 工具暴露。附带消融实验工具，可调参对比检索效果。
+基于 FastAPI + ChromaDB + DeepSeek 的 RAG 智能问答系统：爬取河南工学院官网公开信息 → 隐私脱敏 → 切分入库 → SSE 流式问答。附带消融实验工具，可调参对比检索效果。
 
 > ⚠️ 本系统为个人学习项目，非河南工学院官方应用。
 
@@ -25,7 +24,6 @@
 | 🧹 首句净化 | 扣住模型发起工具调用前的英文旁白（`src/stream_gate.py`），不让它流到用户屏幕 |
 | 🧠 多轮记忆 | Redis 短期记忆（可选），静默降级为前端会话历史 |
 | 🧪 消融实验 | `crawl_ablation.py` 按量爬取 + `rebuild_kb.py` 参数化重建 |
-| 🔧 MCP 工具 | 3 个工具暴露给外部 Agent（`mcp_server/`） |
 
 ## 技术栈
 
@@ -62,7 +60,6 @@ rag_chat/
 ├── eval_baseline.py        # 评测：6 题基准真实链路（检索 + LLM）
 ├── eval_score.py           # 评测：60 分制打分器
 ├── eval_guard_probe.py     # 评测：召回自检能力探测（硬负例 / 无关题 / 正例）
-├── mcp_server/             # MCP 协议服务（暴露给外部 Agent）
 ├── static/chat.html        # 聊天前端（SSE 流式 + 参考来源卡片）
 ├── tests/                  # pytest 测试
 ├── requirements.txt
@@ -266,41 +263,10 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 
 > 25/50/100 题那三套随机评测的题库与脚本从未入库，已丢失、无法复跑。
 
-## MCP 工具
-
-`mcp_server/` 通过 MCP 协议暴露两个**只读**工具，供外部 Agent 调用：
-
-| 工具 | 作用 |
-|---|---|
-| `search_knowledge_base` | 混合检索（向量 + BM25 + RRF） |
-| `list_sources` | 列出知识库已有文档 |
-
-### 注册方式
-
-**MCP 配置不在本仓库里。** Claude Code 读的是机器本地配置（`~/.claude.json`）
-或**仓库根**的 `.mcp.json`——**不读 `.claude/mcp.json`**，而且失败是静默的
-（`claude mcp list` 只显示 `No MCP servers configured`，不报错）。
-
-```bash
-claude mcp add rag-knowledge-base -- python <仓库绝对路径>/rag_chat/mcp_server/server.py
-```
-
-用**绝对路径指向 `server.py`**，而不是 `-m mcp_server.server`：后者要求 `rag_chat`
-同时在 cwd 和模块搜索路径上，而 `claude mcp add` **没有 `--cwd` 参数**（实测 `--help`
-无此项）。`server.py` 自己会把上级目录插进 `sys.path`，故绝对路径调用不需要 cwd。
-
-> ⚠️ **为什么这里对 cwd 这么敏感**：`vector_store.py` 的默认库路径原先写成相对路径
-> `"./chroma_db"`，进程 cwd 一变库的位置就跟着漂；而 chromadb 对不存在的路径是
-> **静默新建空库**——后果不是崩溃，是检索永远返回空、然后 LLM 开始编。
-> 已改为按 `__file__` 解析（`_DEFAULT_DB_PATH`）。
->
-> **代价记录**：曾在 `.claude/mcp.json` 里"修"过一次路径（commit `6238585`），
-> 而那个文件根本不被读取——等于白改。该文件已删除。
-
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 112 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端，均零网络；test_vector_store.py 读临时 Chroma）
+python -m pytest tests/ -v      # 101 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端，均零网络；test_vector_store.py 读临时 Chroma）
 ```
 
 ## 许可证

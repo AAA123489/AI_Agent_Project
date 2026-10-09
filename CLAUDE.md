@@ -23,7 +23,6 @@ RAG/
 | 库外拦截 | 主体校校验（两层：工具参数 + 用户原话），外校问题直接拒答不检索 |
 | 流式对话 | SSE（Server-Sent Events）流式推送 |
 | 多轮记忆 | Redis LPUSH + EXPIRE 30 分钟过期 |
-| MCP 工具 | 2 个**只读**工具暴露给外部 Agent 调用 |
 
 详见 [rag_chat/README.md](rag_chat/README.md)
 

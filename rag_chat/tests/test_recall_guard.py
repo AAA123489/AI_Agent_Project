@@ -337,7 +337,7 @@ def test_判官只吃top5且每块截断200字():
 
 
 def test_top_k透传给检索():
-    """MCP 侧会传非默认 top_k，必须在 state 里传到 retrieve_fn，不能被闭包写死。"""
+    """调用方会传非默认 top_k，必须在 state 里传到 retrieve_fn，不能被闭包写死。"""
     spy = _Spy()
     got = {}
 

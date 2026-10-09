@@ -19,10 +19,11 @@ _embedding_fn = None
 # 默认库路径按「文件位置」解析，不按「当前工作目录」。
 # 原值是相对路径 "./chroma_db"：进程 cwd 一变，库的位置就跟着漂。而 chromadb 的
 # get_or_create_collection 对不存在的路径是**静默新建空库**，不报错——于是
-# 「换个 cwd 启动」的后果不是崩溃，而是检索永远返回空、答案开始编。MCP server
-# 正是这种情形：它由客户端以未知 cwd 拉成子进程（见 .mcp.json / claude mcp add）。
-# app_backend / campus_scraper / rebuild_kb 都显式传了绝对 db_path，
-# 只有 mcp_server 这条链没传，所以这个默认值必须自己可靠。
+# 「换个 cwd 启动」的后果不是崩溃，而是检索永远返回空、答案开始编。
+# 最早踩这个坑的是 MCP server（由客户端以未知 cwd 拉成子进程），该链路已于 2026-10 移除。
+# 现在所有调用方（app_backend / campus_scraper / rebuild_kb）都显式传绝对 db_path。
+# 默认值仍然留着，并要求它自己可靠：它便宜，护着的却是一个「不报错、只返回空」
+# 的坑——将来新增调用方忘了传参数时，兜底必须是对的。
 _DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
 
 

@@ -11,7 +11,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?style=flat&logo=fastapi&logoColor=white)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-112%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-101%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -35,7 +35,7 @@
   - [6. 分块与参数消融](#6-分块与参数消融)
   - [7. 文档解析](#7-文档解析)
   - [8. 多轮记忆与查询缓存](#8-多轮记忆与查询缓存)
-  - [9. MCP 工具与安全](#9-mcp-工具与安全)
+  - [9. 安全](#9-安全)
 - [评测](#评测)
 - [测试](#测试)
 - [踩过的坑](#踩过的坑)
@@ -75,7 +75,6 @@
 | 💬 流式对话 | SSE 逐 delta 推送，答案附 📎 参考来源（日期 · 文件名 · 🔗 原文） |
 | 🧠 多轮记忆 | Redis `LPUSH` + `EXPIRE` 30 分钟，Redis 挂掉静默降级 |
 | ⚡ 查询缓存 | 相同问题复用上次答案（Redis，TTL 1 小时），知识库更新后自动清空 |
-| 🔧 MCP 工具 | 2 个**只读**工具通过 MCP 协议暴露给外部 Agent |
 | 🔐 安全 | X-API-Key 鉴权（`hmac` 恒时比较）、历史长度/字数上限 |
 | 🧪 消融实验 | `crawl_ablation.py` 按量爬取 + `rebuild_kb.py` 参数化重建 + 评测脚本 |
 
@@ -148,7 +147,6 @@ LLM 生成（SSE 逐 delta 下发，经「首句净化」闸门）
 | LLM | DeepSeek（Anthropic 兼容 Tool Use 格式） |
 | 记忆 / 缓存 | Redis 7 |
 | 网页解析 | BeautifulSoup + lxml（HTML → 纯文本，按栏目配选择器） |
-| MCP | mcp 1.28 |
 | 前端 | 原生 HTML/CSS/JS（`static/chat.html`、`admin.html`） |
 
 ---
@@ -210,7 +208,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 112 条，零网络
+python -m pytest tests/ -v      # 101 条，零网络
 ```
 
 ---
@@ -533,28 +531,7 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 **缓存失效**：知识库内容变化（爬虫入库成功）后调 `_flush_query_cache()`，
 按前缀 `rag:answer:v2:*` 用 **`scan_iter` 逐一删除**（不用 `KEYS`，避免阻塞 Redis）。
 
-### 9. MCP 工具与安全
-
-**MCP**（`mcp_server/`）暴露 2 个**只读**工具，供外部 Agent 调用：
-
-| 工具 | 作用 |
-|---|---|
-| `search_knowledge_base(query, top_k=5)` | 混合检索，**与聊天链路共用 `app_backend._search_knowledge_base`**，保证外部 Agent 与站内问答行为一致 |
-| `list_sources()` | 列出知识库所有文档来源及块数 |
-
-> 两个工具都只读：知识库的写入通路只有爬虫一条，外部 Agent 无法借 MCP 往库里塞东西。
-
-**注册**（配置**不在本仓库里**，原因见「踩过的坑」）：
-
-```bash
-claude mcp add rag-knowledge-base -- python <仓库绝对路径>/rag_chat/mcp_server/server.py
-```
-
-用绝对路径指向 `server.py` 而非 `-m mcp_server.server`：后者要求 `rag_chat` 同时在
-cwd 和模块搜索路径上，而 `claude mcp add` **没有 `--cwd` 参数**；`server.py` 自己会把
-上级目录插进 `sys.path`，绝对路径调用就不需要 cwd。
-
-**安全**：
+### 9. 安全
 
 | 措施 | 实现 |
 |---|---|
@@ -619,7 +596,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 112 条，零网络
+python -m pytest tests/ -v      # 101 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
@@ -627,14 +604,13 @@ python -m pytest tests/ -v      # 112 条，零网络
 | `test_recall_guard.py` | 30 | 召回自检：快通过 / 三种去向 / 环 / **终止性** / 判官故障兜底 |
 | `test_vector_store.py` | 20 | `VectorStore` 增删查、相似度检索（读临时 Chroma） |
 | `test_text_splitter.py` | 15 | 递归切分器（含 `sanitize_privacy` 隐私脱敏） |
-| `test_mcp_tools.py` | 11 | MCP 两个只读工具，mock 掉 `VectorStore`，不依赖 ChromaDB / Embedding |
 | `test_stream_gate.py` | 10 | 首句净化：逐字喂与整段喂结果一致（切片边界不影响） |
 | `test_hybrid_retriever.py` | 9 | RRF 融合保留 `vector_distance`，含「BM25 第一名污染 distance」机理 |
 | `test_out_of_kb_guard.py` | 8 | 库外闸门两层各自的分工（纯字符串） |
 | `test_scraper_pagination.py` | 5 | 爬虫分页 URL 拼接回归 |
 | `test_q6_rewrite_integration.py` | 4 | **假 LLM 端到端**复现「LLM 改写掉校名」这条路径 |
 
-> 合计 = `pytest --collect-only` 的 112。**表要逐文件列全，不能拿"其余 N 条"一裹**——
+> 合计 = `pytest --collect-only` 的 101。**表要逐文件列全，不能拿"其余 N 条"一裹**——
 > 曾经这么裹过一次，漏掉的正好是一整个文件（29 条），表里的和顺口写的数字差了 29，
 > 而没人看得出差在哪。逐文件列全，加不起来就会当场暴露。
 
@@ -707,45 +683,20 @@ segfault**。修法：加 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`，加载降�
 这些步骤在流式过程中客户端根本看不到，**评测回放里也查不出走了哪个分支**；
 而非流式的 `run()` 是会下发的，**两处行为不一致**。已统一补上 `yield`。
 
-### 改了配置，而那份文件根本没人读
+### 静默空库：换个 cwd，检索开始返回空
 
-**现象**：仓库里躺着 `.claude/mcp.json`，写着 MCP server 的启动命令和 `cwd`。
-仓库从 `AI_Agent_Project/` 搬到 `RAG/` 后这里的 `cwd` 成了死路径，
-于是郑重提了一次「修正 MCP server 死路径」的 commit。**但 MCP 从来没起来过，
-修完也没起来。**
+**现象**：曾经有一个调用方（MCP server，由客户端以**未知 cwd** 拉成子进程）**不传
+`db_path`**，于是落到 `VectorStore` 的默认值上。那个默认值原本写作相对路径
+`"./chroma_db"`。
 
-**根因**：Claude Code **不读 `.claude/mcp.json`**。项目级配置的位置是**仓库根**的
-`.mcp.json`，本地配置在 `~/.claude.json`。而且失败是**静默**的：
+**根因**：chromadb 的 `get_or_create_collection` 对不存在的路径是**静默新建空库**
+——不抛异常。于是换 cwd 的后果不是崩溃，而是**检索永远返回空，然后 LLM 顺着上下文
+开始编**。生产调用点（`app_backend` / `campus_scraper` / `rebuild_kb`）本来就显式
+传了绝对路径，只有那一条链裸奔。
 
-```
-$ claude mcp list
-No MCP servers configured.
-```
-
-真正的注册在 `~/.claude.json` 里，挂在**搬迁前那个已经不存在的目录**下面。
-所以 MCP 从搬家那天起就是死的，跟 `.claude/mcp.json` 里写什么毫无关系。
-
-**修法**：删掉那个文件——它是**误导**而不是配置；把注册方式写进 README。
-
-> 教训：**改配置前先确认它真的被读。** 判据不是"文件存在"，是
-> `claude mcp list` 里有没有它。那次修的是一个不存在的因果链。
-
-### 静默空库：换了个 cwd，检索开始返回空
-
-**现象**：MCP server 由客户端以**未知 cwd** 拉成子进程。而 MCP 这条链
-（`mcp_server/tools.py`）是唯一**不传 `db_path`** 的，
-于是落到 `VectorStore` 的默认值上。
-
-**根因**：那个默认值原本写作相对路径 `"./chroma_db"`。而 chromadb 的
-`get_or_create_collection` 对不存在的路径是**静默新建空库**——不抛异常。
-于是换 cwd 的后果不是崩溃，而是**检索永远返回空，然后 LLM 顺着上下文开始编**。
-生产调用点（`app_backend` / `campus_scraper` / `rebuild_kb`）本来就显式传了绝对
-路径，只有 MCP 这条链裸奔。
-
-**修法**：默认库路径改为按 `__file__` 解析（`_DEFAULT_DB_PATH`）。
-
-**验证**：从仓库根（陌生 cwd）走 MCP 链，拿到 `my_rag_collection` / **5919 块**——
-修复前这里是 0。
+**修法**：默认库路径改为按 `__file__` 解析（`_DEFAULT_DB_PATH`）。那个不传
+`db_path` 的调用方已于 2026-10 随 MCP 服务一并移除（见 `docs/改进记录.md` 第 22 条），
+但默认值仍留着兜底。
 
 > 教训：**这个技术栈里"路径没解析对"不是异常，是空结果。** 凡是把相对路径当
 > 默认值的地方，都要问一句「换个 cwd 会怎样」。
@@ -799,11 +750,10 @@ rag_chat/
 ├── eval_baseline.py        # 评测：6 题基准真实链路（检索 + LLM）
 ├── eval_score.py           # 评测：60 分制打分器
 ├── eval_guard_probe.py     # 评测：召回自检能力探测（硬负例 / 无关题 / 正例）
-├── mcp_server/             # MCP 协议服务（暴露给外部 Agent）
 ├── static/
 │   ├── chat.html           # 聊天前端（SSE 流式 + 参考来源卡片）
 │   └── admin.html          # 管理面板（爬虫 / 库统计）
-├── tests/                  # pytest 112 条
+├── tests/                  # pytest 101 条
 ├── docs/                   # 改进记录（累计变更日志，论文写作素材）
 ├── requirements.txt
 └── .env.example

@@ -241,7 +241,7 @@ GREETING = (
 # ═══════════════════════════════════════════════════════
 
 _vector_store: VectorStore | None = None
-# 单例构建锁：检索走线程池（AgentLoop 与 MCP 是同进程两条线程），
+# 单例构建锁：检索走线程池，
 # 并发首访会同时通过 None 检查各建一份（Chroma 持久化客户端重复打开）。
 # 照 src/hybrid_retriever.py:114 的 _bm25_build_lock 做双检锁。
 _vector_store_lock = threading.Lock()
@@ -704,7 +704,7 @@ async def _search_knowledge_base_async(query: str, top_k: int = TOP_K) -> str:
 
 
 def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
-    """混合检索（公开同步 API）—— AgentLoop 的工具与 MCP 都调这里。
+    """混合检索（公开同步 API）—— AgentLoop 的工具调这里。
 
     RECALL_GUARD=on 时走召回自检（判定不充分会改写 query 重检、主题不符会拒答）；
     off 时是原样的"检索直接格式化"。
@@ -713,7 +713,7 @@ def _search_knowledge_base(query: str, top_k: int = TOP_K) -> str:
         return _search_plain(query, top_k)
 
     # 图的节点是 async（判官要 await _call_llm），这里从同步 API 桥过去。
-    # 两个调用方（AgentLoop / MCP server）都在 asyncio.to_thread 里，工作线程内
+    # 调用方（AgentLoop）在 asyncio.to_thread 里，工作线程内
     # 没有 running loop，asyncio.run 是安全的；但仍探测一次兜住"将来有人直接在
     # async 上下文里调它"的情况。不用 nest_asyncio——它会全局 patch asyncio 且
     # 仍是在当前 loop 里同步阻塞，后果一样却多一份全局状态污染。
