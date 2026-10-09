@@ -804,7 +804,7 @@ rag_chat/
 │   ├── chat.html           # 聊天前端（SSE 流式 + 参考来源卡片）
 │   └── admin.html          # 管理面板（爬虫 / 库统计）
 ├── tests/                  # pytest 112 条
-├── docs/                   # 改进记录 / 设计文档
+├── docs/                   # 改进记录（累计变更日志，论文写作素材）
 ├── requirements.txt
 └── .env.example
 ```
