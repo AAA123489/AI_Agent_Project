@@ -18,7 +18,7 @@ RAG/
 |------|------|
 | 网页解析 | HTML → 纯文本（动易/JSP CMS 适配），爬虫为唯一入库通路 |
 | 智能分块 | 自研递归切分器（中文标点分隔 + 重叠窗口） |
-| 混合检索 | ChromaDB 向量 + BM25 关键词，RRF 融合，可选 CrossEncoder 重排 |
+| 混合检索 | ChromaDB 向量 + BM25 关键词，RRF 融合 |
 | 召回自检 | 手写判定循环：判定召回能否支撑回答，不能则**拒答**而非编造，不充分则改写 query 重检 |
 | 库外拦截 | 主体校校验（两层：工具参数 + 用户原话），外校问题直接拒答不检索 |
 | 流式对话 | SSE（Server-Sent Events）流式推送 |
@@ -38,7 +38,7 @@ RAG/
 
 **运行参数**（在 `.env`，改配置不用改代码）：
 - `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
-- `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）、`RETRIEVAL_RERANK=off`（重排默认关，遇表格行值题可临时开，代价每问 +1.9s）
+- `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）
 - `RECALL_GUARD=off`（召回自检默认关，关掉即改造前行为）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环）
 
 **评测成绩单**：

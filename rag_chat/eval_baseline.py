@@ -5,12 +5,11 @@ eval_baseline.py — 6 题基准评测（真实链路：检索 + LLM）
 收集每题最终回答 + 检索来源，落盘成 json 供 eval_score.py 打分。
 
 用法:
-    python eval_baseline.py                      # 跑基准 6 题（默认 rerank=off，对齐 60/60 那次的配置）
-    python eval_baseline.py --rerank on          # 按当前 .env 的配置跑（重排开）
+    python eval_baseline.py                      # 跑基准 6 题（对齐 60/60 那次的配置）
     python eval_baseline.py --top-k 5 --tag topk5   # 消融对照，输出 eval_results_baseline_topk5.json
     python eval_baseline.py --out my.json        # 自定义输出文件
 
-注意：TOP_K / RETRIEVAL_MODE / RETRIEVAL_RERANK 是 app_backend 的模块级常量，
+注意：TOP_K / RETRIEVAL_MODE 是 app_backend 的模块级常量，
 import 时一次性求值，所以必须在 import 之前写进 os.environ 才生效（import 后再改没用）。
 """
 
@@ -33,12 +32,6 @@ from datetime import datetime  # noqa: E402
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="6 题基准评测（真实链路）")
-    p.add_argument(
-        "--rerank",
-        choices=["on", "off"],
-        default="off",
-        help="重排开关，默认 off（对齐 60/60 那次的配置；当前 .env 里是 on）",
-    )
     p.add_argument("--top-k", type=int, default=None, help="检索返回片段数，默认读 .env（8）")
     p.add_argument(
         "--mode",
@@ -54,7 +47,6 @@ def _parse_args() -> argparse.Namespace:
 _ARGS = _parse_args()
 
 # 必须在 import app_backend 之前落到 os.environ：load_dotenv 默认不覆盖已存在的环境变量
-os.environ["RETRIEVAL_RERANK"] = _ARGS.rerank
 if _ARGS.top_k is not None:
     os.environ["TOP_K"] = str(_ARGS.top_k)
 if _ARGS.mode is not None:

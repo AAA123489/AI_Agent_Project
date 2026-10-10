@@ -68,7 +68,6 @@
 | ✂️ 智能分块 | 补充递归切分器（段落→句子→标点），重叠窗口，参数经消融定型 |
 | 🔢 混合检索 | 向量 + BM25 双路召回，**RRF 名次融合**（`k=60`） |
 | 🎯 检索增强 | 年份过滤、文本去重、罕见词精确兜底、同文档补块 |
-| ⚙️ 可选重排 | `bge-reranker-base` CrossEncoder 精排（默认关，`N=16`） |
 | 🛡️ **召回自检** | 判定召回的片段能否支撑回答，不能则**拒答**而非编造；不充分时**改写 query 重检** |
 | 🚫 库外拦截 | 问外校问题直接拒答不检索；**两层校验**（工具参数 + 用户原话） |
 | 🧹 首句净化 | 扣住模型发起工具调用前的英文旁白，不让它流到用户屏幕 |
@@ -117,10 +116,9 @@ LLM（Agent 循环，工具调用，最多 6 轮）
 │ [5] 文本去重      同通知进两个目录 + 重叠窗口会产生重复块    │
 │ [6] 罕见词精确召回 2/3-gram $contains 兜底（人名/专有名词） │
 │ [7] 同文档补块     前3块 + 中段1块 + 末块，最多5篇，封顶20块 │
-│ [8] 可选重排      bge-reranker-base，N=16（默认关）        │
 └────────────────────────────────────────────────────────┘
    ▼
-[9] 召回自检（可选）
+[8] 召回自检（可选）
    │   best_vector_distance ≤ 0.30 → 直接放行（不调判官）
    │   否则 → LLM 判官：sufficient / insufficient / off_topic
    │   sufficient → 放行；insufficient → 改写 query 重检（环默认关）
@@ -142,7 +140,6 @@ LLM 生成（SSE 逐 delta 下发，经「首句净化」闸门）
 | 向量库 | ChromaDB 1.3（本地持久化） |
 | Embedding | `paraphrase-multilingual-MiniLM-L12-v2`（sentence-transformers） |
 | 关键词检索 | jieba 分词 + rank_bm25（OKAPI） |
-| 重排 | `BAAI/bge-reranker-base` CrossEncoder（可选，~440MB） |
 | 编排 | 全手写：ReAct 工具循环（`AgentLoop`）+ 召回自检判定循环 |
 | LLM | DeepSeek（Anthropic 兼容 Tool Use 格式） |
 | 记忆 / 缓存 | Redis 7 |
@@ -178,8 +175,6 @@ cp .env.example .env
 | `MAX_TOKENS` | `1000` | 回答长度**上限**，非目标 |
 | `TOP_K` | `8` | 向量召回片段数，消融最优 |
 | `RETRIEVAL_MODE` | `hybrid` | `hybrid`（向量+BM25）/ `vector`（消融对照） |
-| `RETRIEVAL_RERANK` | `off` | 重排开关，`on` 需下载 ~440MB 模型 |
-| `RERANK_TOP_N` | `16` | 重排后保留条数，`N=8` 会截掉宽泛题关键句 |
 | `RECALL_GUARD` | `off` | 召回自检开关，`on` = 硬负例拒答 0/6 → 6/6 |
 | `RECALL_GUARD_MAX_ATTEMPTS` | `1` | 检索轮数，`2` = 允许改写重检（环） |
 | `QUERY_CACHE` | `on` | 查询级缓存开关 |
@@ -258,7 +253,6 @@ python -m pytest tests/ -v      # 101 条，零网络
 |---|---|
 | `Bm25Retriever` | jieba 分词建倒排索引；全库打分取 top30 → 按年过滤 → 截断 |
 | `rrf_fuse` | Reciprocal Rank Fusion，`k=60`，**按名次融合而非分数** |
-| `Reranker` | `bge-reranker-base`，**仅开关打开才加载**（省内存） |
 
 **为什么用 RRF 而不是加权求和**：向量相似度（0~1 余弦）和 BM25 分（无上界）**量纲不可比**，
 归一化后加权还得再调一个权重参数。RRF 只用名次，无参数、稳健。
@@ -571,7 +565,7 @@ python eval_baseline.py --tag topk8          # 跑固定 6 题真实链路，落
 python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ```
 
-检索参数可用命令行覆盖做消融：`--rerank on|off`、`--top-k N`、`--mode hybrid|vector`。
+检索参数可用命令行覆盖做消融：`--top-k N`、`--mode hybrid|vector`。
 
 ### ⚠️ 关于 60/60：它是单次采样，不是稳定性质
 
@@ -669,13 +663,6 @@ python -m pytest tests/ -v      # 101 条，零网络
 `sentence-transformers` 每次加载模型都去 `hf-mirror.com` 校验，网络异常时**加载挂起甚至
 segfault**。修法：加 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`，加载降到 <3 秒。
 
-### 重排把召回截断掉了
-
-加了重排后 Q5 检索级命中从 4/4 **掉到 0/4**——`RERANK_TOP_N=8` 时重排把补块带进来的
-关键句**截断挤掉了**。改为 `N=16` 后恢复。
-
-> 普适结论：**重排是「排序」组件，不该承担「截断」职责**，截断预算要留给召回层。
-
 ### 可观测性缺口：流式路径的 `add_step` 没有 `yield`
 
 排查 Q6 时**无法判断**走了哪个闸门分支。根因是工具返回后的 `add_step(...)`
@@ -733,7 +720,6 @@ rag_chat/
 ├── redis_client.py         # Redis 短期记忆（可选）
 ├── src/
 │   ├── vector_store.py     # Chroma 向量库封装（增删查、相似度检索）
-│   ├── hybrid_retriever.py # 混合检索：BM25 + RRF 融合 + 可选 CrossEncoder 重排
 │   ├── recall_guard.py     # 召回自检（判定循环 + 改写重检环，全手写）
 │   ├── stream_gate.py      # 首句净化：扣住工具调用前的英文旁白
 │   └── config.py           # .env 配置管理

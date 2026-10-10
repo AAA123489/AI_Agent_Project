@@ -12,7 +12,7 @@ Q6「河北工学院的录取分数线是多少？」实测同一份代码跑两
 这个 bug 难得地**不需要 LLM 就能测**：闸门是纯字符串函数，输入定了输出就定了。
 不 mock、不发网络请求。
 
-注：本模块导入 app_backend（约 1 秒，reranker 惰性加载），比纯函数测试慢，但值得——
+注：本模块导入 app_backend（约 1 秒），比纯函数测试慢，但值得——
 这是全项目唯一能把「LLM 改写掉校名」这条路径钉死的测试。
 """
 from app_backend import _guard_tool_call, _refuse_out_of_kb_school

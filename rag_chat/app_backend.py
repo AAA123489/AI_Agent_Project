@@ -30,7 +30,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.vector_store import VectorStore
-from src.hybrid_retriever import rrf_fuse, get_bm25_retriever, get_reranker
+from src.hybrid_retriever import rrf_fuse, get_bm25_retriever
 from src.stream_gate import OpeningGate
 
 load_dotenv()
@@ -54,12 +54,6 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1000"))
 TOP_K = int(os.getenv("TOP_K", "8"))
 # 检索模式：hybrid（向量+BM25 RRF 融合，默认）| vector（纯向量，消融对照）
 RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "hybrid")
-# 重排开关：on 时对融合后候选用 CrossEncoder 精排再截断 | off（默认，省加载模型）
-RETRIEVAL_RERANK = os.getenv("RETRIEVAL_RERANK", "off")
-# 重排候选数：重排后保留多少条进 LLM 上下文。
-# 消融发现 N=8 对宽泛题（如 Q5「有哪些安排」）会截掉埋在补块里的关键句，
-# N=16 时 Q3/Q5 关键句命中恢复 3/3、4/4（重排只排序不牺牲召回）
-RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "16"))
 # 召回自检开关：on 时检索后跑召回自检（判定不充分→改写 query 重检，
 # 主题不符→拒答），补上"本校但库里没有"这类题的低置信度拒答 | off（默认，行为同改造前）
 RECALL_GUARD = os.getenv("RECALL_GUARD", "off")
@@ -93,7 +87,7 @@ def get_active_params() -> str:
     """
     return (
         f"model={MODEL_NAME} | temperature={TEMPERATURE} | max_tokens={MAX_TOKENS} | "
-        f"top_k={TOP_K} | retrieval_mode={RETRIEVAL_MODE} | rerank={RETRIEVAL_RERANK} | "
+        f"top_k={TOP_K} | retrieval_mode={RETRIEVAL_MODE} | "
         f"recall_guard={RECALL_GUARD}"
         + (f"(attempts={RECALL_GUARD_MAX_ATTEMPTS})" if RECALL_GUARD == "on" else "")
     )
@@ -474,7 +468,7 @@ def _rare_token_exact_recall(query: str, merged: list[dict], vs) -> list[dict]:
 
 
 def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
-    """混合检索前半段：库外校验 → 年份过滤 → 向量+BM25 融合召回 → 去重 → 补块 → 可选重排。
+    """混合检索前半段：库外校验 → 年份过滤 → 向量+BM25 融合召回 → 去重 → 补块。
 
     返回**信封**而不是纯候选列表。原因：这一段有三个非正常出口（库外拒答 /
     检索失败 / 未找到），装不进 list[dict]；埋点耗时也要一并带出。信封结构：
@@ -488,11 +482,9 @@ def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
       由 BM25 关键词召回补上，两路名次用 Reciprocal Rank Fusion 无参融合
     - 同文档补块：宽泛问题（如「有哪些安排」）常只命中文档开头，
       关键句（如 3月3-15日排查）埋在正文第二节，相似度捞不到，必须按 source 元数据整篇补齐
-    - 可选重排：CrossEncoder 精排再截断，提高关键块进 LLM 上下文的概率
 
     模式开关（.env）：
     - RETRIEVAL_MODE=hybrid（默认）| vector（退纯向量，消融对照）
-    - RETRIEVAL_RERANK=on/off（默认 off）
     BM25 依赖缺失或建索引失败 → 自动回退纯向量，不崩。
     """
     t0 = time.perf_counter()  # 检索耗时埋点起点
@@ -611,15 +603,6 @@ def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
             added += 1
     t_ctx = time.perf_counter()  # 去重 + 同文档补块完成
 
-    # 5. 可选重排：对补块后的候选用 CrossEncoder 精排再截断（默认关，省加载模型）。
-    #    重排后 merged 长度 ≤ RERANK_TOP_N，天然被下方 `merged[:cap]` 截断兜底。
-    if RETRIEVAL_RERANK == "on":
-        try:
-            merged = get_reranker().rerank(query, merged, top_n=RERANK_TOP_N)
-            t_rr = time.perf_counter()
-        except Exception as e:
-            logger.error("重排失败，保留原顺序: %s", e)
-
     # ── 检索明细日志（配合 request_id 排查：各段耗时 + 命中块数）──
     t_total = time.perf_counter()
     ctx_start = t_mix if t_mix is not None else t_vec  # 补块段起点：hybrid 从融合后计，纯向量从召回后计
@@ -628,13 +611,12 @@ def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
         "bm25": _ms(t_vec, t_bm25),
         "fuse": _ms(t_bm25, t_mix),
         "complement": _ms(ctx_start, t_ctx),
-        "rerank": _ms(t_ctx, t_rr),
     }
     logger.info(
-        "检索明细 query=%r mode=%s 向量=%sms BM25=%sms 融合=%sms 补块=%sms 重排=%sms 总=%dms 命中=%d块",
+        "检索明细 query=%r mode=%s 向量=%sms BM25=%sms 融合=%sms 补块=%sms 总=%dms 命中=%d块",
         query[:60], RETRIEVAL_MODE,
         timings["vector"], timings["bm25"], timings["fuse"],
-        timings["complement"], timings["rerank"],
+        timings["complement"],
         int((t_total - t0) * 1000), len(merged[:cap]),
     )
     return {"candidates": merged[:cap], "short_circuit": None, "timings": timings}

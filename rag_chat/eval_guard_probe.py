@@ -30,7 +30,7 @@ eval_guard_probe.py — 召回自检能力探测（硬负例 + 正例，真实�
     RECALL_GUARD=on RECALL_GUARD_MAX_ATTEMPTS=1 python eval_guard_probe.py --tag ring_off  # 消融：环关
     RECALL_GUARD=on python eval_guard_probe.py --answers --tag guard_on_full
 
-注意：RECALL_GUARD / TOP_K / RETRIEVAL_MODE / RETRIEVAL_RERANK 是 app_backend 的模块级
+注意：RECALL_GUARD / TOP_K / RETRIEVAL_MODE 是 app_backend 的模块级
 常量，import 时一次性求值，必须在 import 之前写进 os.environ（照 eval_baseline.py 的做法）。
 
 硬负例的「库里确实没有」是人工扫全库（6297 块）确认过的（见 docs/改进记录.md）：
@@ -62,8 +62,6 @@ from datetime import datetime  # noqa: E402
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="召回自检能力探测（硬负例 + 正例）")
-    p.add_argument("--rerank", choices=["on", "off"], default="off",
-                   help="重排开关，默认 off（对齐 60/60 那次配置；.env 里现在是 on）")
     p.add_argument("--tag", default=None, help="实验标签，输出文件名后缀")
     p.add_argument("--answers", action="store_true",
                    help="额外跑完整 AgentLoop，记录最终回答（花 LLM 调用）")
@@ -71,7 +69,6 @@ def _parse_args() -> argparse.Namespace:
 
 
 _ARGS = _parse_args()
-os.environ["RETRIEVAL_RERANK"] = _ARGS.rerank
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -175,8 +172,7 @@ async def _answer(question: str) -> str:
 async def main() -> None:
     print("=" * 78)
     print(f"召回自检探测 | RECALL_GUARD={RECALL_GUARD} "
-          f"MAX_ATTEMPTS={RECALL_GUARD_MAX_ATTEMPTS if RECALL_GUARD == 'on' else '-'} "
-          f"| rerank={_ARGS.rerank}")
+          f"MAX_ATTEMPTS={RECALL_GUARD_MAX_ATTEMPTS if RECALL_GUARD == 'on' else '-'}")
     print("=" * 78)
 
     # 预热：首个检索要加载 embedding 模型 + 建 BM25 索引，实测约 18s。
@@ -234,7 +230,6 @@ async def main() -> None:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "recall_guard": RECALL_GUARD,
             "max_attempts": RECALL_GUARD_MAX_ATTEMPTS,
-            "rerank": _ARGS.rerank,
             "rows": rows,
         }, f, ensure_ascii=False, indent=2)
     print(f"\n🎉 结果已保存: {out_path}")

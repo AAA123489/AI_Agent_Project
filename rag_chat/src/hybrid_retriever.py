@@ -1,5 +1,5 @@
 """
-hybrid_retriever.py — 混合检索三件套（BM25 + RRF 融合 + Reranker）
+hybrid_retriever.py — 混合检索两件套（BM25 + RRF 融合）
 ================================================================
 纯向量检索的短板是"关键词精确命中"：关键句（如 Q3 的「报名截止」）
 埋在文档中段、与 query 语义重叠度低时，余弦相似度经常捞不到。
@@ -8,21 +8,14 @@ hybrid_retriever.py — 混合检索三件套（BM25 + RRF 融合 + Reranker）
 1. BM25 关键词召回 —— jieba 中文分词 + rank_bm25 OKAPI 打分，补精确命中
 2. RRF 融合 —— Reciprocal Rank Fusion，把向量/BM25 两路排名的名次融合，
    无权重参数、稳健，避免手工调融合系数
-3. Reranker —— 可选重排（CrossEncoder），开关开启才加载模型（~100MB），
-   对候选 (query, 文本) 对做精排
 
 所有组件均惰性加载 + 模块级单例缓存，聊天链路只加载用到的部分。
 
-依赖：jieba、rank-bm25（轻量纯 Python 包）；sentence-transformers（重排才用）。
+依赖：jieba、rank-bm25（轻量纯 Python 包）。
 """
 
 import logging
-import os
 import threading
-
-# 国内访问 HuggingFace 需走镜像（与 vector_store 一致；
-# transformers 下载 CrossEncoder 模型时也读这个环境变量）
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 logger = logging.getLogger(__name__)
 
@@ -165,53 +158,3 @@ def rrf_fuse(vector_results: list[dict], bm25_results: list[dict], k: int = 60, 
             out.append(doc)
     return out
 
-
-class Reranker:
-    """可选重排器：CrossEncoder 对 (query, 文本) 打分精排。
-
-    模型为中文精排标准选择 BGE-Reranker-base（~440MB），
-    仅 RETRIEVAL_RERANK=on 时才加载（hf-mirror 可下载）。
-    """
-
-    # 中文精排模型（BAAI/bge-reranker-base），hf-mirror 可下载
-    MODEL_NAME = "BAAI/bge-reranker-base"
-
-    def __init__(self):
-        self._model = None
-
-    def load(self):
-        if self._model is None:
-            # 强制走镜像，避免 transformers 直连 huggingface.co 被墙
-            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-            from sentence_transformers import CrossEncoder
-            logger.info("加载 Reranker 模型: %s", self.MODEL_NAME)
-            self._model = CrossEncoder(self.MODEL_NAME)
-        return self._model
-
-    def rerank(self, query: str, candidates: list[dict], top_n: int = 8) -> list[dict]:
-        if not candidates:
-            return []
-        try:
-            model = self.load()
-            pairs = [(query, c.get("text", "")) for c in candidates]
-            scores = model.predict(pairs, show_progress_bar=False)
-            ranked = sorted(zip(candidates, scores), key=lambda x: -x[1])
-            return [c for c, _ in ranked[:top_n]]
-        except Exception as e:
-            # 重排失败：原样返回全部候选（不截断），等价于关掉重排，不降级质量
-            logger.error("重排失败，保持原顺序: %s", e)
-            return candidates
-
-
-# 模块级单例缓存
-_reranker: Reranker | None = None
-_reranker_build_lock = threading.Lock()
-
-
-def get_reranker() -> Reranker:
-    global _reranker
-    if _reranker is None:
-        with _reranker_build_lock:
-            if _reranker is None:
-                _reranker = Reranker()
-    return _reranker
