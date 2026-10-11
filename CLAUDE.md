@@ -23,6 +23,7 @@ RAG/
 | 库外拦截 | 主体校校验（两层：工具参数 + 用户原话），外校问题直接拒答不检索 |
 | 流式对话 | SSE（Server-Sent Events）流式推送 |
 | 多轮记忆 | Redis LPUSH + EXPIRE 30 分钟过期 |
+| 自动更新 | 定时增量爬取（每天 03:00）+ 启动补跑，爬完自动清查询缓存 |
 
 详见 [rag_chat/README.md](rag_chat/README.md)
 
@@ -40,6 +41,7 @@ RAG/
 - `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
 - `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）
 - `RECALL_GUARD=off`（召回自检默认关，关掉即改造前行为）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环）
+- `SCRAPE_SCHEDULE_ENABLED=on`（自动更新知识库，每天 03:00 增量爬取）、`SCRAPE_SCHEDULE_PAGES=2`、`SCRAPE_CATCHUP_DAYS=3`（启动补跑阈值，0 = 关）
 
 **评测成绩单**：
 

@@ -100,6 +100,24 @@ python app_fastapi.py
 
 - **全量爬取**：前端管理面板点「刷新爬虫」，或调用 `POST /scrape/start`（每类最多 N 页，较慢）
 - **按量实验爬取**：`python crawl_ablation.py 通知公告 1 10`（分类 + 页数 + 最多几篇，自动脱敏落盘到 `scraped_docs/`）
+- **自动更新**：默认开启，服务运行期间每天 03:00 自动增量爬取一次；距上次成功爬取超过 `SCRAPE_CATCHUP_DAYS` 天时，启动后还会补跑一次。配置见下表。
+
+### 自动更新知识库（定时增量爬取）
+
+**默认开启**。服务运行期间每天到点自动跑一次「爬取 → 入库 → 清查询缓存」，不用人工干预。
+
+爬虫本身是**增量**的（`campus_scraper/storage.py` 按 URL 去重），重复跑不会重复入库，只捞新增文章——所以定时跑是安全的，不会撑大知识库、也不需要清库重建。
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `SCRAPE_SCHEDULE_ENABLED` | `on` | `off` 关闭定时更新 |
+| `SCRAPE_SCHEDULE_HOUR` / `_MINUTE` | `3` / `0` | 每天触发时刻（本地时间） |
+| `SCRAPE_SCHEDULE_PAGES` | `2` | 每类爬几页。增量场景 2 页够用；**注意代价**：每页之间要休息 3~8 分钟（模拟真人、避免触发官网防火墙），13 分类 × 2 页 ≈ 2 小时 |
+| `SCRAPE_CATCHUP_DAYS` | `3` | 距上次成功爬取超过这么多天，启动后补跑一次；`0` = 关闭补跑 |
+
+> **服务不常驻会怎样**：进程内定时器只在服务运行时触发。凌晨窗口若在关机状态，那一次就跳过——由 `SCRAPE_CATCHUP_DAYS` 补跑兜住：下次启动服务时若发现知识库太久没更新，会立刻补跑一次。所以**不必 7×24 开着**，隔几天开一次也能保持更新。
+>
+> 查看状态：`GET /scrape/status`（下次几点跑、上次什么时候跑的、当前是否在跑）。服务启动日志里也会打印「⏰ 下次自动更新知识库：N 小时后」。
 
 ## API 端点
 
@@ -109,7 +127,8 @@ python app_fastapi.py
 | GET | `/health` | 健康检查（含 `kb_chunks`） |
 | POST | `/chat` | SSE 流式对话（Body：`user_id` / `message` / `history`） |
 | POST | `/scrape` | 触发爬虫（确认） |
-| POST | `/scrape/start` | 实际执行爬虫 |
+| POST | `/scrape/start` | 实际执行爬虫（后台运行、立即返回；已在跑则 409） |
+| GET | `/scrape/status` | 爬虫 / 自动更新状态（下次触发时刻、上次爬取时间、是否在跑） |
 | GET | `/kb-stats` | 知识库统计（含 `unaccounted_chunks`） |
 
 `POST /chat` 请求示例：

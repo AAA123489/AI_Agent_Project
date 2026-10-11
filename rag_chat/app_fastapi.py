@@ -13,14 +13,15 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
-from contextlib import asynccontextmanager
-from datetime import datetime
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request, Header, Depends, HTTPException
+from fastapi import FastAPI, Request, Header, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -83,7 +84,26 @@ async def lifespan(_: FastAPI):
         logger.info("✅ embedding 模型预热完成（首问提速）")
     except Exception:
         logger.warning("embedding 预热失败，首问可能仍较慢", exc_info=True)
-    yield
+
+    # ── 自动更新知识库：放下面的循环里，随应用启停 ──
+    scheduler: "asyncio.Task | None" = None
+    if SCRAPE_SCHEDULE_ENABLED:
+        scheduler = asyncio.create_task(_scheduled_scraper_loop())
+        logger.info(
+            "⏰ 自动更新知识库已启用：每天 %02d:%02d 增量爬取 %d 页/类（补跑阈值 %d 天）",
+            SCRAPE_SCHEDULE_HOUR, SCRAPE_SCHEDULE_MINUTE,
+            SCRAPE_SCHEDULE_PAGES, SCRAPE_CATCHUP_DAYS,
+        )
+    else:
+        logger.info("⏰ 自动更新知识库已关闭（SCRAPE_SCHEDULE_ENABLED=off）")
+
+    try:
+        yield
+    finally:
+        if scheduler:
+            scheduler.cancel()
+            with suppress(asyncio.CancelledError):
+                await scheduler
 
 
 app = FastAPI(title="校园百事通 API", version="2.0", lifespan=lifespan)
@@ -114,6 +134,23 @@ MAX_HISTORY_MSG_CHARS = 2000
 QUERY_CACHE = os.getenv("QUERY_CACHE", "on").strip().lower() == "on"
 QUERY_CACHE_TTL = int(os.getenv("QUERY_CACHE_TTL", "3600"))
 _CACHE_PREFIX = "rag:answer:v2:"
+
+# ── 自动更新知识库（定时增量爬取）──
+# 服务运行期间，每天按下面配置的时刻自动跑一次：爬取 → 入库 → 清查询缓存。
+# 爬虫本身是增量的（URL 级 SQLite 去重，见 campus_scraper/storage.py），
+# 重复跑不会重复入库，只捞新增文章——所以定时跑是安全的，不需要清库重建。
+SCRAPE_SCHEDULE_ENABLED = os.getenv("SCRAPE_SCHEDULE_ENABLED", "on").strip().lower() == "on"
+SCRAPE_SCHEDULE_HOUR = int(os.getenv("SCRAPE_SCHEDULE_HOUR", "3"))
+SCRAPE_SCHEDULE_MINUTE = int(os.getenv("SCRAPE_SCHEDULE_MINUTE", "0"))
+# 每类爬几页。增量场景 2 页够用（新文章都在列表头部）；调大会显著拉长耗时——
+# 每页之间要休息 3~8 分钟（模拟真人浏览，避免触发官网防火墙），
+# 13 分类 × 2 页 × 约 5.5 分钟 ≈ 2 小时，这已是日常可接受的上限。
+SCRAPE_SCHEDULE_PAGES = int(os.getenv("SCRAPE_SCHEDULE_PAGES", "2"))
+# 启动补跑阈值（天）：距上次成功爬取超过这么多天，启动后就补跑一次；0 = 关闭。
+# 存在的意义：服务不常驻时，凌晨窗口大概率在关机状态，只靠"每天 3 点"等于永远不跑。
+SCRAPE_CATCHUP_DAYS = int(os.getenv("SCRAPE_CATCHUP_DAYS", "3"))
+# 补跑前的宽限期（秒）：等 embedding 预热、Redis 等启动动作先做完，避免抢资源。
+SCRAPE_CATCHUP_GRACE_SECONDS = 60
 
 
 class ChatRequest(BaseModel):
@@ -436,44 +473,156 @@ async def scrape(pages: int = 2, _: str = Depends(_verify_api_key)):
 # 且无锁，两个请求可同时开爬。改后台任务 + 运行标记：请求立即返回，断开不影响爬取。
 _scrape_lock = asyncio.Lock()
 _scrape_running = False
+# 持有后台任务引用。asyncio 只对 task 持弱引用，不留一份的话任务可能在爬取途中被 GC 掉。
+_scrape_task: "asyncio.Task | None" = None
+# 本进程内上次爬取结束时刻（供 /scrape/status 展示；跨进程/重启不保留）
+_last_scrape_finished = ""
 
 
-async def _run_scrape_and_flush(pages: int) -> None:
-    """后台执行爬虫 + 清空旧缓存；结束后复位运行标记。"""
-    global _scrape_running
+async def _run_scrape_and_flush(pages: int, trigger: str = "manual") -> None:
+    """后台执行爬虫 + 清空旧缓存；结束后复位运行标记。
+
+    trigger 只用于日志：manual（手动触发）/ scheduled（每日定时）/ catchup（启动补跑）。
+    """
+    global _scrape_running, _last_scrape_finished
+    t0 = time.monotonic()
     try:
         async with _scrape_lock:
             result = await run_scraper_pipeline(max_pages=pages)
         # 爬虫入库后知识库已变化，旧查询缓存可能过时，清空
         await _flush_query_cache()
         logger.info(
-            "爬虫后台任务完成: 文章 %d 篇, 分块 %d, 错误 %d 条",
+            "爬虫任务完成 [%s]: 文章 %d 篇, 分块 %d, 错误 %d 条, 耗时 %.1f 分钟",
+            trigger,
             result.get("total_articles", 0),
             result.get("total_chunks", 0),
             len(result.get("errors", [])),
+            (time.monotonic() - t0) / 60,
         )
     except Exception:
-        logger.exception("后台爬虫任务失败")
+        logger.exception("爬虫任务失败 [%s]", trigger)
     finally:
         _scrape_running = False
+        _last_scrape_finished = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _spawn_scrape(pages: int, trigger: str) -> bool:
+    """检查是否已在跑 → 置位 → 起后台任务。返回 False 表示已在跑，本次不启动。
+
+    同步函数：检查与置位之间没有 await，单事件循环内原子。
+    手动触发与定时/补跑共用这一道闸——否则凌晨定时跑起来的同时有人点一下，
+    就是两个爬虫同时打学校官网。
+    """
+    global _scrape_running, _scrape_task
+    if _scrape_running:
+        return False
+    _scrape_running = True
+    _scrape_task = asyncio.create_task(_run_scrape_and_flush(pages, trigger))
+    return True
 
 
 @app.post("/scrape/start")
-async def scrape_start(background_tasks: BackgroundTasks, pages: int = 2, _: str = Depends(_verify_api_key)):
+async def scrape_start(pages: int = 2, _: str = Depends(_verify_api_key)):
     """触发全站爬虫（后台运行、立即返回；防重复触发；受保护）"""
-    global _scrape_running
-    # 检查 + 置位之间无 await，单事件循环内原子，不会并发双开
-    if _scrape_running:
+    if not _spawn_scrape(pages, "manual"):
         return JSONResponse(
             {"detail": "爬虫已在运行中，请勿重复触发"},
             status_code=409,
         )
-    _scrape_running = True
-    background_tasks.add_task(_run_scrape_and_flush, pages)
     return {
         "status": "started",
         "message": "爬虫已在后台启动，完成后会自动清空旧缓存。可稍后通过 /kb-stats 查看知识库变化。",
         "pages": pages,
+    }
+
+
+# ═══════════════════════════════════════════════════════
+# 自动更新知识库（定时增量爬取）
+# ═══════════════════════════════════════════════════════
+
+def _seconds_until_next_run() -> float:
+    """距下一个配置时刻还有多少秒（今天该时刻已过则算到明天同一时刻）。"""
+    now = datetime.now()
+    target = now.replace(
+        hour=SCRAPE_SCHEDULE_HOUR, minute=SCRAPE_SCHEDULE_MINUTE, second=0, microsecond=0,
+    )
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+def _last_scrape_age_days() -> float | None:
+    """距上次成功爬取过了多少天。从未爬过 / 缓存库读不出来 → None。"""
+    try:
+        from campus_scraper.storage import get_stats as _scrape_cache_stats
+        ts = _scrape_cache_stats().get("last_scraped_at", "")
+        if not ts:
+            return None
+        return (datetime.now() - datetime.fromisoformat(ts)).total_seconds() / 86400
+    except Exception:
+        logger.warning("读取爬虫缓存统计失败，跳过补跑判断", exc_info=True)
+        return None
+
+
+async def _scheduled_scraper_loop() -> None:
+    """自动更新知识库主循环：启动补跑 → 每天到点跑一次。
+
+    手写 asyncio 循环而不引调度框架，与项目「撤掉编排框架」的取向一致
+    （见 docs/改进记录.md 第 20 条）。每轮重算目标时刻，所以机器休眠或
+    系统时钟调整造成的偏差会自然纠正，不会越跑越飘。
+    """
+    # ── 启动补跑 ──
+    if SCRAPE_CATCHUP_DAYS > 0:
+        age = _last_scrape_age_days()
+        if age is None or age >= SCRAPE_CATCHUP_DAYS:
+            reason = "从未爬取过" if age is None else f"距上次已 {age:.1f} 天"
+            logger.info(
+                "⏰ 启动补跑触发（%s），%d 秒后开始自动更新知识库",
+                reason, SCRAPE_CATCHUP_GRACE_SECONDS,
+            )
+            await asyncio.sleep(SCRAPE_CATCHUP_GRACE_SECONDS)
+            if not _spawn_scrape(SCRAPE_SCHEDULE_PAGES, "catchup"):
+                logger.info("⏰ 补跑时爬虫已在运行，本次跳过")
+
+    # ── 每日定时 ──
+    while True:
+        delay = _seconds_until_next_run()
+        logger.info(
+            "⏰ 下次自动更新知识库：%.1f 小时后（每天 %02d:%02d）",
+            delay / 3600, SCRAPE_SCHEDULE_HOUR, SCRAPE_SCHEDULE_MINUTE,
+        )
+        await asyncio.sleep(delay)
+        if _spawn_scrape(SCRAPE_SCHEDULE_PAGES, "scheduled"):
+            logger.info("⏰ 定时自动更新知识库已启动")
+        else:
+            logger.info("⏰ 到点时爬虫仍在运行，本次跳过")
+
+
+@app.get("/scrape/status")
+async def scrape_status():
+    """爬虫 / 自动更新状态（下次几点跑、上次跑完是什么时候、当前是否在跑）。"""
+    try:
+        from campus_scraper.storage import get_stats as _scrape_cache_stats
+        cache = _scrape_cache_stats()
+    except Exception:
+        logger.warning("读取爬虫缓存统计失败", exc_info=True)
+        cache = {}
+
+    next_run = None
+    if SCRAPE_SCHEDULE_ENABLED and not _scrape_running:
+        next_run = (datetime.now() + timedelta(seconds=_seconds_until_next_run())).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+    return {
+        "schedule_enabled": SCRAPE_SCHEDULE_ENABLED,
+        "schedule_at": f"{SCRAPE_SCHEDULE_HOUR:02d}:{SCRAPE_SCHEDULE_MINUTE:02d}",
+        "schedule_pages": SCRAPE_SCHEDULE_PAGES,
+        "catchup_days": SCRAPE_CATCHUP_DAYS,
+        "running": _scrape_running,
+        "next_run_at": next_run,
+        "last_run_finished_at": _last_scrape_finished,
+        "last_scraped_at": cache.get("last_scraped_at", ""),
+        "total_scraped_urls": cache.get("total_scraped", 0),
     }
 
 
