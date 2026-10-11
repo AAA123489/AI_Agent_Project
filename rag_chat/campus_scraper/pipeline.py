@@ -25,6 +25,7 @@ from text_splitter import RecursiveTextSplitter, sanitize_privacy
 from .config import CATEGORIES, MAX_LIST_PAGES, USER_AGENT
 from .scraper import scrape_category
 from .models import ArticleMetadata, KnowledgeBaseStats
+from .storage import mark_scraped
 
 logger = logging.getLogger("campus_scraper.pipeline")
 
@@ -68,10 +69,14 @@ def _save_clean_text(article: ArticleMetadata) -> Path:
 def _split_and_embed(
     articles: list[ArticleMetadata],
     vector_store: VectorStore,
+    *,
+    mark_fn=None,
 ) -> int:
     """
-    将文章列表分块后存入 ChromaDB。
+    将文章列表分块后存入 ChromaDB，**逐篇入库成功后才落「已爬」标记**。
     返回存入的 chunk 总数。
+
+    mark_fn: 落标记的函数（默认 storage.mark_scraped），仅测试时注入替身。
     """
     splitter = RecursiveTextSplitter(
         chunk_size=CHUNK_SIZE,
@@ -116,6 +121,21 @@ def _split_and_embed(
         )
         total_chunks += len(chunks)
 
+        # ── 入库成功后才落「已爬」标记（逐篇，不是逐分类）──
+        # 顺序不能反：这条标记就是「这篇已经进知识库」的承诺，下一轮爬取据此跳过它。
+        # 曾经标记写在爬取阶段、入库却是整个分类跑完才做，于是「标记了但没入库」
+        # 的窗口横跨**整个分类**（实测一个分类 6~20 分钟）——期间中断就永久丢正文。
+        # 改成逐篇落标记后，这个窗口缩到单篇的一次 save_documents 之内；
+        # 真要在这里挂掉，也只是下一篇重爬一遍，不会再出现静默空洞。
+        (mark_fn or mark_scraped)(
+            url=article.url,
+            title=article.title,
+            publish_date=article.publish_date,
+            category=article.category,
+            source_site=article.source_site,
+            content_hash=article.content_hash,
+        )
+
     return total_chunks
 
 
@@ -149,8 +169,9 @@ async def run_scrape_pipeline(
     total_chunks = 0
 
     # ── Step 1: 逐分类爬取 → 立即清洗/保存/嵌入 ──
-    # 设计：每爬完一个分类马上落盘入库（而非全部爬完再统一入库），
-    # 这样任何时刻中断/断电，已爬内容都已安全入库，不会被"已标记未入库"丢失。
+    # 设计：每爬完一个分类马上落盘入库（而非全部爬完再统一入库）。
+    # 真正兜住中断的是「入库成功才落已爬标记」这条不变量（见 _split_and_embed）：
+    # 中途被打断最多白爬一遍，不会留下"标记了但没内容"的静默空洞。
     if progress_callback:
         await progress_callback({"status": "scraping", "message": "正在爬取学校官网..."})
 

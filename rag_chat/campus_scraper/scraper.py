@@ -221,6 +221,7 @@ async def scrape_category(
     init_db()  # 确保数据库就绪
 
     all_articles: list[ArticleMetadata] = []
+    seen_urls: set[str] = set()   # 本轮内去重；标记已挪到入库后，见下方注释
     current_url = base_url + list_path
 
     for page_num in range(1, max_pages + 1):
@@ -251,13 +252,21 @@ async def scrape_category(
                 logger.debug("  ⏭ 跳过（超日期范围）: %s [%s]", art_title[:40], art_date)
                 continue
 
-            # 去重检查
+            # 去重检查（DB 里的标记 = 上一轮已经入库）
             if is_scraped(art_url):
                 logger.debug("  ⏭ 已爬过: %s", art_title[:40])
                 seen_before += 1
                 continue
 
+            # 本轮内去重：标记既然要等入库成功才落，同一轮里重复出现的 URL
+            # 就不能再指望 DB 标记挡住——由这张表兜着（不计入早停判据 seen_before）
+            if art_url in seen_urls:
+                continue
+            seen_urls.add(art_url)
+
             if dry_run:
+                # dry_run 只收 URL、从不入库，所以这里照旧直接标记：
+                # 它本来就不承诺「已入库」，不存在标记与内容脱节的问题。
                 logger.info("  🔍 [DRY RUN] 将爬取: %s", art_title[:50])
                 mark_scraped(
                     url=art_url, title=art_title, publish_date=art_date,
@@ -277,13 +286,14 @@ async def scrape_category(
 
             if article:
                 all_articles.append(article)
-                mark_scraped(
-                    url=art_url, title=article.title,
-                    publish_date=article.publish_date,
-                    category=name, source_site=source_site,
-                    content_hash=article.content_hash,
-                )
                 new_count += 1
+                # ⚠ 这里**不落**「已爬」标记。标记的含义是「这篇已经进知识库」，
+                # 而入库（落盘 .txt → 分块 → 嵌入）要等**整个分类**爬完才做。
+                # 标记写在这里 = 提前承诺一件还没发生的事：分类跑到一半进程被杀，
+                # 标记留下了、正文却只在内存里，于是这篇正文永久丢失——而且之后
+                # 每轮都被 is_scraped 静默跳过，看库根本发现不了。
+                # 实测 2026-10-11 两次中途停机丢了 20 篇（14 学校新闻 + 6 马院新闻）。
+                # 标记统一改由 pipeline._split_and_embed 在入库成功后落。
 
         logger.info("  ✅ [%s] 第 %d 页完成，本页新增 %d 篇，累计 %d 篇",
                     name, page_num, new_count, len(all_articles))
