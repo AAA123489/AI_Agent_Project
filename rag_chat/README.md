@@ -96,7 +96,7 @@ python app_fastapi.py
 
 访问 http://127.0.0.1:8000 即聊天前端；健康检查 http://127.0.0.1:8000/health 返回 `kb_chunks`。
 
-### 3. 构建知识库（二选一）
+### 3. 构建知识库（三选一）
 
 - **全量爬取**：前端管理面板点「刷新爬虫」，或调用 `POST /scrape/start`（每类最多 N 页，较慢）
 - **按量实验爬取**：`python crawl_ablation.py 通知公告 1 10`（分类 + 页数 + 最多几篇，自动脱敏落盘到 `scraped_docs/`）

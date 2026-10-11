@@ -11,7 +11,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?style=flat&logo=fastapi&logoColor=white)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-101%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-111%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -36,6 +36,7 @@
   - [7. 文档解析](#7-文档解析)
   - [8. 多轮记忆与查询缓存](#8-多轮记忆与查询缓存)
   - [9. 安全](#9-安全)
+  - [10. 自动更新知识库](#10-自动更新知识库)
 - [评测](#评测)
 - [测试](#测试)
 - [踩过的坑](#踩过的坑)
@@ -63,6 +64,7 @@
 | 能力 | 实现 |
 |------|------|
 | 🕷️ 网站爬取 | aiohttp 异步爬虫，动易/JSP CMS 适配，SQLite 断点续爬，限速模拟真人 |
+| 🔄 自动更新 | 服务运行期间**每天 03:00 增量爬取并清查询缓存**；距上次成功爬取超 N 天则启动补跑（**不必 7×24 常驻**） |
 | 🔒 隐私脱敏 | 入库前删除个人手机号 / 邮箱，**保留办公室座机**（`sanitize_privacy`） |
 | 📄 文档解析 | TXT / MD（爬虫落盘语料的 header 解析 + 正文回读） |
 | ✂️ 智能分块 | 补充递归切分器（段落→句子→标点），重叠窗口，参数经消融定型 |
@@ -97,6 +99,10 @@ paraphrase-multilingual-MiniLM-L12-v2 向量化
    ▼
 ChromaDB（collection: my_rag_collection，5919 块）
 ```
+
+> **这条链路不只跑一次**：服务运行期间每天 `03:00` 自动增量重跑一遍（爬虫按 URL 去重，
+> 只捞新增文章），跑完清空查询缓存。距上次成功爬取超过 `SCRAPE_CATCHUP_DAYS` 天时，
+> 启动后还会补跑一次——所以服务**不必 7×24 常驻**。详见 [关键设计 10](#10-自动更新知识库)。
 
 ### 在线：一次问答的全链路
 
@@ -181,6 +187,11 @@ cp .env.example .env
 | `QUERY_CACHE_TTL` | `3600` | 缓存过期秒数 |
 | `REDIS_URL` | `redis://localhost:6379` | Redis 地址（不装 Redis 也能跑，记忆/缓存静默降级） |
 | `EXPERIMENT_TAG` | `baseline` | 对话日志分文件标签（消融实验用） |
+| `SCRAPE_SCHEDULE_ENABLED` | `on` | `off` 关闭「自动更新知识库」 |
+| `SCRAPE_SCHEDULE_HOUR` / `_MINUTE` | `3` / `0` | 每日触发时刻（本地时间） |
+| `SCRAPE_SCHEDULE_PAGES` | `1` | 日常每类最多翻几页——**是上限不是固定成本**，遇到已爬内容即停 |
+| `SCRAPE_CATCHUP_PAGES` | `3` | 启动补跑每类最多翻几页（追赶要翻更深，故单独配一个大值） |
+| `SCRAPE_CATCHUP_DAYS` | `3` | 距上次成功爬取超过这么多天则启动补跑一次；`0` = 关闭 |
 
 ### 3. 构建知识库（三选一）
 
@@ -189,6 +200,8 @@ cp .env.example .env
 python crawl_ablation.py 通知公告 1 10
 
 # ② 全量爬取：前端管理面板点「刷新爬虫」，或 POST /scrape/start（较慢）
+
+# ③ 什么都不用做：服务启动后每天 03:00 自动增量更新（默认开，见 关键设计 10）
 ```
 
 ### 4. 启动
@@ -203,7 +216,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 101 条，零网络
+python -m pytest tests/ -v      # 111 条，零网络
 ```
 
 ---
@@ -216,7 +229,8 @@ python -m pytest tests/ -v      # 101 条，零网络
 | GET | `/health` | 健康检查（含 `kb_chunks`） | — |
 | POST | `/chat` | SSE 流式对话 | ✅ |
 | POST | `/scrape` | 触发爬虫（确认） | ✅ |
-| POST | `/scrape/start` | 实际执行爬虫 | ✅ |
+| POST | `/scrape/start` | 实际执行爬虫（后台运行、立即返回；已在跑则 409） | ✅ |
+| GET | `/scrape/status` | 自动更新状态（下次触发时刻 / 上次爬取时间 / 是否在跑） | — |
 | GET | `/kb-stats` | 知识库统计（含 `unaccounted_chunks`） | — |
 
 > `unaccounted_chunks` 正常**恒为 0**：它统计"不属于任何爬虫分类"的块。
@@ -535,6 +549,43 @@ DeepSeek 的 Anthropic 兼容端点对**具名 `tool_choice`** 支持不可靠�
 | 爬虫 | 限速，不打挂目标站；只爬公开信息 |
 | 免责 | 前端标注「个人学习项目，非官方应用」 |
 
+### 10. 自动更新知识库
+
+**目标**：让知识库自己跟上官网，不用人工重爬。
+
+**为什么不引 APScheduler**：这个项目一路在**撤编排框架**——召回自检的图式状态机改成了手写
+`while`（见上文第 3 节），主对话循环也是手写的 `AgentLoop`。定时器同理，一个
+`while True: sleep(距下个 03:00)` 就够了，省掉一个依赖加一个后台服务。代价是**进程内定时器
+只跟着服务活**，于是用「启动补跑」把这个缺口补上：
+
+```
+服务启动 ──→ 距上次成功爬取 ≥ SCRAPE_CATCHUP_DAYS ?
+              ├─ 是 → 等 60s（避开启动瞬时负载）→ 补跑（SCRAPE_CATCHUP_PAGES 页/类）
+              └─ 否 → 跳过
+          ──→ while True: sleep(距下个 03:00) → 定时跑（SCRAPE_SCHEDULE_PAGES 页/类）
+```
+
+**两个页数参数分开配，因为成本不一样**：日常只要接上时间线（列表页 1 页约 18 篇、覆盖约
+6 个月，够了），补跑对应「停摆很久后追赶」，所以单独给一个大值。
+
+**日常跑得起来的关键是「追平即停」**：列表页是**跨页严格新→旧**的连续序列（实测 通知公告
+第 1/2/3 页 = `10-10~09-23` / `09-22~09-03` / `09-02~08-05`，页与页无缝衔接），所以
+**一旦某页出现已爬过的 URL，就说明时间线已经接上缓存，后面的页只会更旧** → 直接停止翻页。
+
+这一条把 `max_pages` 从「每轮固定要付出的成本」变成「真积压时的上限」：日常每类跑完第 1 页
+就停，省掉其后每页 3~8 分钟的页间休息。**改造前的代价是实测出来的**——一轮跑到第 11 个栏目
+时已过去 2 小时以上，而其中 5 个栏目一篇新增都没有，时间全花在空转的页间休息上。
+
+**为什么定时跑是安全的**：`campus_scraper/storage.py` 按 URL 去重（`is_scraped` → 跳过，
+`mark_scraped` 落库），重复跑**只捞新增**，不会重复入库、不会撑大知识库，所以
+**不需要清库重建**。爬完调 `_flush_query_cache()` 清空查询缓存，避免用户继续拿到旧答案。
+
+**三条触发路径共用同一道闸**（`_spawn_scrape`）：手动 `POST /scrape/start`、每日定时、
+启动补跑。已在跑时返回 409 / 跳过本次，不会双爬。
+
+> **反过来说，这也是它的局限**：官网**就地改稿**的文章不会被重抓（URL 已入缓存）。
+> 要感知改稿得比对内容哈希，目前不做——见「已知局限」。
+
 ---
 
 ## 评测
@@ -590,7 +641,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 101 条，零网络
+python -m pytest tests/ -v      # 111 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
@@ -602,9 +653,11 @@ python -m pytest tests/ -v      # 101 条，零网络
 | `test_hybrid_retriever.py` | 9 | RRF 融合保留 `vector_distance`，含「BM25 第一名污染 distance」机理 |
 | `test_out_of_kb_guard.py` | 8 | 库外闸门两层各自的分工（纯字符串） |
 | `test_scraper_pagination.py` | 5 | 爬虫分页 URL 拼接回归 |
+| `test_scraper_early_stop.py` | 5 | 增量翻页「追平即停」——遇到已爬内容必须停止翻页 |
+| `test_html_parser_form_content.py` | 5 | 正文被包在 `<form>` 里时不许整篇丢（含「短控件表单仍要删」的反向用例） |
 | `test_q6_rewrite_integration.py` | 4 | **假 LLM 端到端**复现「LLM 改写掉校名」这条路径 |
 
-> 合计 = `pytest --collect-only` 的 101。**表要逐文件列全，不能拿"其余 N 条"一裹**——
+> 合计 = `pytest --collect-only` 的 111。**表要逐文件列全，不能拿"其余 N 条"一裹**——
 > 曾经这么裹过一次，漏掉的正好是一整个文件（29 条），表里的和顺口写的数字差了 29，
 > 而没人看得出差在哪。逐文件列全，加不起来就会当场暴露。
 
@@ -701,6 +754,7 @@ segfault**。修法：加 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`，加载降�
 | 隐性时效词不敏感 | 「最近有安排暑期社会实践」的「最近」检索器感知不到，2025 年通知可能排在 2026 年前 |
 | 60/60 有 ±10 采样噪声 | 两级 LLM，见上文 |
 | 25/50/100 题题库已丢失 | 从未入库，无法复跑 |
+| 官网**就地改稿**感知不到 | 爬虫按 URL 去重、只捞新增；已入库的文章被改稿/换版不会重抓（要比内容哈希，目前不做） |
 
 **「隐性时效词」这条评估过、决定不做**，理由三条：① 显式年份已可用
 （`_extract_year` + `where={"year": ...}` 的 ±1 年窗口），缺的只是「最近 / 今年」这类
@@ -739,7 +793,7 @@ rag_chat/
 ├── static/
 │   ├── chat.html           # 聊天前端（SSE 流式 + 参考来源卡片）
 │   └── admin.html          # 管理面板（爬虫 / 库统计）
-├── tests/                  # pytest 101 条
+├── tests/                  # pytest 111 条
 ├── docs/                   # 改进记录（累计变更日志，论文写作素材）
 ├── requirements.txt
 └── .env.example
