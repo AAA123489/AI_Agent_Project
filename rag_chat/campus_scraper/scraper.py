@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import ssl
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
@@ -37,6 +38,17 @@ _OUTPUT_ROOT = Path(__file__).resolve().parent.parent / "scraped_docs"
 
 # ── 日期过滤阈值 ──
 _DATE_CUTOFF = datetime.now() - timedelta(days=DATE_FILTER_DAYS)
+
+# ── TLS 上下文：必须显式放宽到 SECLEVEL=1 ──
+# hait.edu.cn 全站（含 17 个分类入口 / 13 个子站）只提供 SHA-1 密码套件，实测协商到
+# `AES128-SHA`；而 Python 自带的 OpenSSL 3.0 默认安全级别是 SECLEVEL=2，会**直接拒绝
+# SHA-1**，于是握手阶段就失败，报 `SSLV3_ALERT_HANDSHAKE_FAILURE`——13 个分类全军覆没。
+# 2026-08 那次全量爬取还能通，是对方服务器后来改了 TLS 配置（同一个 URL 用 curl 能通，
+# 因为 curl 走的是另一套 OpenSSL 配置，所以「curl 能开 ≠ 爬虫能爬」）。
+# 注意：只放宽密码套件等级，**证书校验保持开启**（证书本身有效，*.hait.edu.cn，2027-03 到期）；
+# 且这是只读爬取公开信息，不涉及敏感数据传输。
+_SSL_CONTEXT = ssl.create_default_context()
+_SSL_CONTEXT.set_ciphers("DEFAULT@SECLEVEL=1")
 
 
 def _random_delay() -> float:
@@ -88,6 +100,7 @@ async def fetch_page(
             try:
                 async with session.get(
                     url, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
+                    ssl=_SSL_CONTEXT,   # 见文件顶部 _SSL_CONTEXT 注释：不放宽则全站握手失败
                 ) as resp:
                     if resp.status == 200:
                         # 尝试检测编码
@@ -194,7 +207,8 @@ async def scrape_category(
 
     参数:
         category_cfg: CATEGORIES 中的一项
-        max_pages: 最多爬几页列表
+        max_pages: 最多爬几页列表。**这是上限而非固定成本**——一旦某页出现
+            已爬过的 URL（说明时间线已接上缓存），立即停止翻页，见下方停止判据。
         dry_run: 如果为 True，只收集 URL 不实际抓取文章内容
     """
     name = category_cfg["name"]
@@ -225,7 +239,8 @@ async def scrape_category(
             break
 
         # ── 逐篇爬取 ──
-        new_count = 0
+        new_count = 0      # 本页成功抓到并落库的篇数（日志用）
+        seen_before = 0    # 本页命中「已爬过」缓存的 URL 数（停止翻页的判据）
         for art in list_articles:
             art_url = art["url"]
             art_title = art.get("title", "")
@@ -239,6 +254,7 @@ async def scrape_category(
             # 去重检查
             if is_scraped(art_url):
                 logger.debug("  ⏭ 已爬过: %s", art_title[:40])
+                seen_before += 1
                 continue
 
             if dry_run:
@@ -272,19 +288,34 @@ async def scrape_category(
         logger.info("  ✅ [%s] 第 %d 页完成，本页新增 %d 篇，累计 %d 篇",
                     name, page_num, new_count, len(all_articles))
 
-        # ── 批量间长休息（模拟真人"看完一页去干别的"，3~8 分钟） ──
-        if page_num < max_pages:
-            rest = random.uniform(BATCH_REST_MIN, BATCH_REST_MAX)
-            logger.info("  ☕ [%s] 休息 %.0f 秒（%.1f 分钟）后翻下一页...",
-                        name, rest, rest / 60)
-            await asyncio.sleep(rest)
+        # ── 停止判据：本页出现「已爬过」的 URL → 时间线已接上缓存，停止翻页 ──
+        # 依据（2026-10-11 实测）：列表页是**跨页严格新→旧**的连续序列——
+        # 通知公告 p1 10-10~09-23、p2 09-22~09-03、p3 09-02~08-05；
+        # 学校新闻 p1 10-10~09-18、p2 09-18~09-05、p3 09-05~08-23。
+        # 页与页无缝衔接，所以本页一旦有已爬内容，后面的页只会更旧、必然也已在缓存里。
+        # 页首可能有 1 篇置顶（旧文章，如通知公告 p1 头部那条 03-20），但它同样是旧内容，
+        # 命中缓存只会让停止来得更早，不会漏抓。
+        # 效果：max_pages 从「每天固定要付出的成本」变成「真积压时的上限」——
+        # 日常增量跑完第 1 页就停，省掉其后每页 3~8 分钟的页间休息。
+        if seen_before > 0:
+            logger.info("  ⏭ [%s] 第 %d 页含已爬内容，已追上进度，停止翻页",
+                        name, page_num)
+            break
 
-        # ── 分页：有没有下一页？ ──
-        if pagination.get("next_url"):
-            current_url = resolve_next_url(current_url, pagination["next_url"])
-        else:
+        # ── 分页：没有下一页 / 到上限，都到此为止（先判再休息，不白等） ──
+        if page_num >= max_pages:
+            break
+        if not pagination.get("next_url"):
             logger.info("  🏁 [%s] 无更多分页，完成", name)
             break
+
+        # ── 批量间长休息（模拟真人"看完一页去干别的"，3~8 分钟） ──
+        # 只在「本页全是新内容、确实还要往后翻」时才休息
+        rest = random.uniform(BATCH_REST_MIN, BATCH_REST_MAX)
+        logger.info("  ☕ [%s] 休息 %.0f 秒（%.1f 分钟）后翻下一页...",
+                    name, rest, rest / 60)
+        await asyncio.sleep(rest)
+        current_url = resolve_next_url(current_url, pagination["next_url"])
 
     logger.info("🏁 [%s] 全部完成，共爬取 %d 篇", name, len(all_articles))
     return all_articles

@@ -90,9 +90,10 @@ async def lifespan(_: FastAPI):
     if SCRAPE_SCHEDULE_ENABLED:
         scheduler = asyncio.create_task(_scheduled_scraper_loop())
         logger.info(
-            "⏰ 自动更新知识库已启用：每天 %02d:%02d 增量爬取 %d 页/类（补跑阈值 %d 天）",
-            SCRAPE_SCHEDULE_HOUR, SCRAPE_SCHEDULE_MINUTE,
-            SCRAPE_SCHEDULE_PAGES, SCRAPE_CATCHUP_DAYS,
+            "⏰ 自动更新知识库已启用：每天 %02d:%02d 增量爬取（上限 %d 页/类）；"
+            "超 %d 天未爬则启动补跑（上限 %d 页/类）",
+            SCRAPE_SCHEDULE_HOUR, SCRAPE_SCHEDULE_MINUTE, SCRAPE_SCHEDULE_PAGES,
+            SCRAPE_CATCHUP_DAYS, SCRAPE_CATCHUP_PAGES,
         )
     else:
         logger.info("⏰ 自动更新知识库已关闭（SCRAPE_SCHEDULE_ENABLED=off）")
@@ -142,10 +143,13 @@ _CACHE_PREFIX = "rag:answer:v2:"
 SCRAPE_SCHEDULE_ENABLED = os.getenv("SCRAPE_SCHEDULE_ENABLED", "on").strip().lower() == "on"
 SCRAPE_SCHEDULE_HOUR = int(os.getenv("SCRAPE_SCHEDULE_HOUR", "3"))
 SCRAPE_SCHEDULE_MINUTE = int(os.getenv("SCRAPE_SCHEDULE_MINUTE", "0"))
-# 每类爬几页。增量场景 2 页够用（新文章都在列表头部）；调大会显著拉长耗时——
-# 每页之间要休息 3~8 分钟（模拟真人浏览，避免触发官网防火墙），
-# 13 分类 × 2 页 × 约 5.5 分钟 ≈ 2 小时，这已是日常可接受的上限。
-SCRAPE_SCHEDULE_PAGES = int(os.getenv("SCRAPE_SCHEDULE_PAGES", "2"))
+# 每类最多爬几页（日常定时）。**这是上限而非固定成本**：爬虫一旦遇到已爬过的 URL
+# 就停止翻页（见 campus_scraper/scraper.py 的停止判据），所以日常增量实际只翻 1 页。
+# 列表页一页约 18 篇、覆盖约 6 个月，新内容永远在页首，1 页的上限足够。
+SCRAPE_SCHEDULE_PAGES = int(os.getenv("SCRAPE_SCHEDULE_PAGES", "1"))
+# 每类最多爬几页（启动补跑）。补跑对应「停摆很久后追赶」，需要更深，
+# 所以单独给一个大一点的页数——因为有空页即停的判据，跑满才会付出页间休息的代价。
+SCRAPE_CATCHUP_PAGES = int(os.getenv("SCRAPE_CATCHUP_PAGES", "3"))
 # 启动补跑阈值（天）：距上次成功爬取超过这么多天，启动后就补跑一次；0 = 关闭。
 # 存在的意义：服务不常驻时，凌晨窗口大概率在关机状态，只靠"每天 3 点"等于永远不跑。
 SCRAPE_CATCHUP_DAYS = int(os.getenv("SCRAPE_CATCHUP_DAYS", "3"))
@@ -581,7 +585,7 @@ async def _scheduled_scraper_loop() -> None:
                 reason, SCRAPE_CATCHUP_GRACE_SECONDS,
             )
             await asyncio.sleep(SCRAPE_CATCHUP_GRACE_SECONDS)
-            if not _spawn_scrape(SCRAPE_SCHEDULE_PAGES, "catchup"):
+            if not _spawn_scrape(SCRAPE_CATCHUP_PAGES, "catchup"):
                 logger.info("⏰ 补跑时爬虫已在运行，本次跳过")
 
     # ── 每日定时 ──
@@ -617,6 +621,7 @@ async def scrape_status():
         "schedule_enabled": SCRAPE_SCHEDULE_ENABLED,
         "schedule_at": f"{SCRAPE_SCHEDULE_HOUR:02d}:{SCRAPE_SCHEDULE_MINUTE:02d}",
         "schedule_pages": SCRAPE_SCHEDULE_PAGES,
+        "catchup_pages": SCRAPE_CATCHUP_PAGES,
         "catchup_days": SCRAPE_CATCHUP_DAYS,
         "running": _scrape_running,
         "next_run_at": next_run,
