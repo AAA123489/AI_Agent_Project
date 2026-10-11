@@ -33,6 +33,16 @@ _REMOVE_KEYWORDS = [
     "copyright", "hotnews", "recommend", "related", "share",
 ]
 
+# ── <form> 的例外阈值：文字量达到这个数的 form 当正文留着，不当控件删 ──
+# 动易的部分模板把**整篇正文**包在 <form> 里（实测 dlxy.hait.edu.cn 的
+# <div class="page_content"> 890 字，100% 落在其中的 <form> 内）。无条件删 form
+# 会把文章删成 0 字，而 0 字会被 scrape_article 静默 return None、**连「已爬」标记
+# 都不写**——于是这些文章每一轮都重试一次、每次都失败，永远进不了知识库。
+# 判据用文字量而非 class/id 关键词：真正该删的搜索/登录表单只有几个字，
+# 正文动辄几百字；而且搜索框本身另有 _REMOVE_KEYWORDS 里的 "search" 兜着
+# （实测搜素容器 class="searchstyle1092668" 就是被关键词规则删掉的）。
+_CONTENT_FORM_MIN_CHARS = 200
+
 # ── 日期正则 ──
 _DATE_PATTERNS = [
     re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})[日]?"),
@@ -63,6 +73,9 @@ def _should_remove(tag: Tag) -> bool:
 
     # 按标签名
     if tag.name.lower() in _REMOVE_TAGS:
+        # <form> 例外：扛着正文的 form 不能删，见 _CONTENT_FORM_MIN_CHARS 注释
+        if tag.name.lower() == "form":
+            return len(tag.get_text(strip=True)) < _CONTENT_FORM_MIN_CHARS
         return True
 
     # 按 class/id 关键词
