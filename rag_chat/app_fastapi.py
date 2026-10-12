@@ -141,7 +141,7 @@ _CACHE_PREFIX = "rag:answer:v2:"
 # 爬虫本身是增量的（URL 级 SQLite 去重，见 campus_scraper/storage.py），
 # 重复跑不会重复入库，只捞新增文章——所以定时跑是安全的，不需要清库重建。
 SCRAPE_SCHEDULE_ENABLED = os.getenv("SCRAPE_SCHEDULE_ENABLED", "on").strip().lower() == "on"
-SCRAPE_SCHEDULE_HOUR = int(os.getenv("SCRAPE_SCHEDULE_HOUR", "3"))
+SCRAPE_SCHEDULE_HOUR = int(os.getenv("SCRAPE_SCHEDULE_HOUR", "10"))
 SCRAPE_SCHEDULE_MINUTE = int(os.getenv("SCRAPE_SCHEDULE_MINUTE", "0"))
 # 每类最多爬几页（日常定时）。**这是上限而非固定成本**：爬虫一旦遇到已爬过的 URL
 # 就停止翻页（见 campus_scraper/scraper.py 的停止判据），所以日常增量实际只翻 1 页。
@@ -151,7 +151,8 @@ SCRAPE_SCHEDULE_PAGES = int(os.getenv("SCRAPE_SCHEDULE_PAGES", "1"))
 # 所以单独给一个大一点的页数——因为有空页即停的判据，跑满才会付出页间休息的代价。
 SCRAPE_CATCHUP_PAGES = int(os.getenv("SCRAPE_CATCHUP_PAGES", "3"))
 # 启动补跑阈值（天）：距上次成功爬取超过这么多天，启动后就补跑一次；0 = 关闭。
-# 存在的意义：服务不常驻时，凌晨窗口大概率在关机状态，只靠"每天 3 点"等于永远不跑。
+# 存在的意义：服务不常驻时，定时那一个时刻大概率在关机状态（开发/演示机尤其如此），
+# 只靠定时触发等于永远不跑。所以这里不看"到点没有"，只看"距离上次成功爬取多久"。
 SCRAPE_CATCHUP_DAYS = int(os.getenv("SCRAPE_CATCHUP_DAYS", "3"))
 # 补跑前的宽限期（秒）：等 embedding 预热、Redis 等启动动作先做完，避免抢资源。
 SCRAPE_CATCHUP_GRACE_SECONDS = 60

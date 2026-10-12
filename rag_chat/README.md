@@ -100,7 +100,7 @@ python app_fastapi.py
 
 - **全量爬取**：前端管理面板点「刷新爬虫」，或调用 `POST /scrape/start`（每类最多 N 页，较慢）
 - **按量实验爬取**：`python crawl_ablation.py 通知公告 1 10`（分类 + 页数 + 最多几篇，自动脱敏落盘到 `scraped_docs/`）
-- **自动更新**：默认开启，服务运行期间每天 03:00 自动增量爬取一次；距上次成功爬取超过 `SCRAPE_CATCHUP_DAYS` 天时，启动后还会补跑一次。配置见下表。
+- **自动更新**：默认开启，服务运行期间每天 10:00 自动增量爬取一次；距上次成功爬取超过 `SCRAPE_CATCHUP_DAYS` 天时，启动后还会补跑一次。配置见下表。
 
 ### 自动更新知识库（定时增量爬取）
 
@@ -111,7 +111,7 @@ python app_fastapi.py
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `SCRAPE_SCHEDULE_ENABLED` | `on` | `off` 关闭定时更新 |
-| `SCRAPE_SCHEDULE_HOUR` / `_MINUTE` | `3` / `0` | 每天触发时刻（本地时间） |
+| `SCRAPE_SCHEDULE_HOUR` / `_MINUTE` | `10` / `0` | 每天触发时刻（本地时间） |
 | `SCRAPE_SCHEDULE_PAGES` | `1` | 日常每类**最多**爬几页（上限，非固定成本） |
 | `SCRAPE_CATCHUP_PAGES` | `3` | 启动补跑每类最多爬几页 |
 | `SCRAPE_CATCHUP_DAYS` | `3` | 距上次成功爬取超过这么多天，启动后补跑一次；`0` = 关闭补跑 |
