@@ -240,12 +240,16 @@ python app_fastapi.py
 
 `grade` 两段式：**向量距离 ≤0.30 直接放行**（不调判官；基线 5 题里 4 题命中，Q2 运动会 0.307 会落到判官），其余交 LLM 判官给 `VERDICT: sufficient|insufficient|off_topic`。解析失败 / 判官异常**一律放行**——宁可少拒答，不可误拒答，更不可打断 SSE 流。
 
-**开关**（`.env`，默认关，关掉即改造前行为）：
+**开关**（`.env`，**默认开**——2026-10-16 由 `off` 翻为 `on`）：
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `RECALL_GUARD` | `off` | `on` 启用召回自检 |
+| `RECALL_GUARD` | `on` | `off` 退回改造前行为（跑对照用，见下方命令） |
 | `RECALL_GUARD_MAX_ATTEMPTS` | `1` | 检索轮数。`1`=不重检，`2`=允许一次改写重检（环跑一圈） |
+
+> 为什么默认开：消融数据是支持开的——硬负例拒答 0/6 → 6/6、无关题 0/4 → 4/4、正例零误拒，
+> 代价只是负例多约 0.8s（正例走快通过通道，不调判官）。原先那句"off 保持改造前行为"是
+> 把它当**消融基线**，不是效果判断；写进论文的是它开着的行为，那就该默认开着。
 
 **效果**（`eval_guard_probe.py`，硬负例 6 + 无关题 4 + 正例 5）：
 
@@ -255,10 +259,16 @@ python app_fastapi.py
 | `RECALL_GUARD=on` | **6/6** | 4/4 | 5/5 | 1.04s / 0.45s |
 
 ```bash
-RECALL_GUARD=on python eval_guard_probe.py --tag guard_on      # 探测：硬负例 + 无关 + 正例
+python eval_guard_probe.py --tag guard_on                      # 探测：硬负例 + 无关 + 正例（默认即 on）
+RECALL_GUARD=off python eval_guard_probe.py --tag guard_off    # 对照：改造前行为（必须显式传，见下）
 RECALL_GUARD=on python eval_guard_probe.py --answers           # 额外跑完整 AgentLoop，看最终回答
 RECALL_GUARD=on RECALL_GUARD_MAX_ATTEMPTS=2 python eval_guard_probe.py --tag ring_on  # 消融：环开
 ```
+
+> **跑 `off` 对照必须显式传环境变量。** `load_dotenv()` 默认**不覆盖**已存在的环境变量，
+> 所以 `RECALL_GUARD=off` 写在命令前面必胜、写在 `.env` 里不行。
+> 同理 `eval_baseline.py` 没有显式设这个开关，它现在跑的是**自检开**的条件——
+> 旧那份 60/60 是 `guard=off` 时量的，要对齐得 `RECALL_GUARD=off python eval_baseline.py`。
 
 **环默认关**是消融的结论，不是省事：干净负例上环开环关打平（环没收益），但在灰区题「招生办咨询电话」上环开会把一次正确的拒答翻成放行（两次独立运行复现）——判官第二轮不记得自己已判过不充分，对着同样无关的新片段重新判就成了 sufficient。代码保留可开关。详见 [docs/改进记录.md](docs/改进记录.md) 第 15 条。
 

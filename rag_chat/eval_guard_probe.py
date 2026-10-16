@@ -25,13 +25,15 @@ eval_guard_probe.py — 召回自检能力探测（硬负例 + 正例，真实�
 加 `--answers` 再跑一遍完整 AgentLoop，看最终回答是不是真的拒答而非编造（花 LLM 调用）。
 
 用法:
-    python eval_guard_probe.py                          # guard 按 .env（默认 off）
-    RECALL_GUARD=on python eval_guard_probe.py --tag guard_on
+    python eval_guard_probe.py                          # guard 按 .env（2026-10-16 起默认 on）
+    RECALL_GUARD=off python eval_guard_probe.py --tag guard_off   # 对照：改造前行为
     RECALL_GUARD=on RECALL_GUARD_MAX_ATTEMPTS=1 python eval_guard_probe.py --tag ring_off  # 消融：环关
     RECALL_GUARD=on python eval_guard_probe.py --answers --tag guard_on_full
 
 注意：RECALL_GUARD / TOP_K / RETRIEVAL_MODE 是 app_backend 的模块级
 常量，import 时一次性求值，必须在 import 之前写进 os.environ（照 eval_baseline.py 的做法）。
+**跑 off 那一档必须像上面那样显式传环境变量**：`load_dotenv()` 默认不覆盖已存在的
+环境变量，所以命令行前缀必胜，而 `.env` 里改成 off 会连带把默认档也改掉。
 
 硬负例的「库里确实没有」是人工扫全库（6297 块）确认过的（见 docs/改进记录.md）：
 「营业时间 / 开饭 / 就餐时间 / 宿舍有空调 / 校车 / 班车 / 通勤 / 熄灯 / 开馆 / 闭馆」全库 0 命中；

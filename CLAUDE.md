@@ -40,7 +40,7 @@ RAG/
 **运行参数**（在 `.env`，改配置不用改代码）：
 - `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
 - `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）
-- `RECALL_GUARD=off`（召回自检默认关，关掉即改造前行为）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环）
+- `RECALL_GUARD=on`（召回自检，2026-10-16 默认值由 off 翻为 on——消融数据支持开：负例 0/6 → 6/6、正例零误拒）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环，环被消融否决保持 1）
 - `SCRAPE_SCHEDULE_ENABLED=on`（自动更新知识库，每天 10:00 增量爬取）、`SCRAPE_SCHEDULE_PAGES=1`（日常页数上限）、`SCRAPE_CATCHUP_PAGES=3`（补跑页数上限）、`SCRAPE_CATCHUP_DAYS=3`（启动补跑阈值，0 = 关）
 
 **评测成绩单**：
