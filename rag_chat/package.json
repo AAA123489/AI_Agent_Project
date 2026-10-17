@@ -1,0 +1,21 @@
+{
+  "name": "rag-chat-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "RAG Chat 前端的 Tailwind 构建与第三方资源本地化",
+  "scripts": {
+    "vendor": "node scripts/copy-vendor.mjs",
+    "build:css": "tailwindcss -i ./assets/tailwind.input.css -o ./static/css/tailwind.css --minify",
+    "watch:css": "tailwindcss -i ./assets/tailwind.input.css -o ./static/css/tailwind.css --watch",
+    "build": "npm run vendor && npm run build:css"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.0",
+    "@tailwindcss/typography": "^0.5.16",
+    "tailwindcss": "^4.1.0"
+  },
+  "dependencies": {
+    "lucide": "^0.475.0",
+    "marked": "^15.0.0"
+  }
+}

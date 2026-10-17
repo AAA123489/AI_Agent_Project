@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -23,12 +24,15 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Header, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import (
+    StreamingResponse, JSONResponse, HTMLResponse, FileResponse, RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # ── 路径 ──
 _PROJECT_ROOT = Path(__file__).resolve().parent
+_WEB_DIR = _PROJECT_ROOT / "web"
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -39,6 +43,9 @@ from app_backend import (
     AgentLoop, ThinkingEvent, ToolCallEvent, ToolResultEvent,
     TextEvent, DoneEvent, ErrorEvent,
 )
+from auth import auth_router, optional_user, require_user, daily_quota_limit
+from audit import QATrace, record_qa_trace, query_audit, export_audit_rows
+from db import init_db, try_consume_daily_quota
 # Redis（可选，用于服务端对话历史持久化）
 try:
     from redis_client import get_redis_client, save_message, get_recent_messages
@@ -79,6 +86,9 @@ for _h in logging.getLogger().handlers:
 # 把模型加载挪到启动阶段，用户第一问就不用干等。
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # 账号/额度/审计库先建表，失败要尽早暴露，不要拖到第一个用户登录
+    init_db()
+
     try:
         await asyncio.to_thread(_get_vector_store)
         logger.info("✅ embedding 模型预热完成（首问提速）")
@@ -108,6 +118,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="校园百事通 API", version="2.0", lifespan=lifespan)
+
+# 登录/注册/会话路由（/login、/api/register、/api/login、/api/logout、/api/me、/api/auth-config）
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -159,9 +172,12 @@ SCRAPE_CATCHUP_GRACE_SECONDS = 60
 
 
 class ChatRequest(BaseModel):
-    user_id: str
+    # 旧客户端如果还传 user_id，Pydantic 默认忽略；身份一律从会话取
+    model_config = ConfigDict(extra="ignore")
+
     message: str
     history: Optional[list[dict]] = None
+    conversation_id: Optional[str] = None
 
     @field_validator("message")
     @classmethod
@@ -190,6 +206,15 @@ class ChatRequest(BaseModel):
                 raise ValueError("历史消息 content 缺失或为空")
             if len(content) > MAX_HISTORY_MSG_CHARS:
                 raise ValueError(f"历史消息过长（单条上限 {MAX_HISTORY_MSG_CHARS} 字符）")
+        return v
+
+    @field_validator("conversation_id")
+    @classmethod
+    def _check_conversation_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not isinstance(v, str) or len(v) > 64 or not re.fullmatch(r"[A-Za-z0-9_-]+", v):
+            raise ValueError("conversation_id 格式不合法")
         return v
 
 
@@ -274,13 +299,37 @@ async def _flush_query_cache() -> int:
 # SSE Agent 生成器（核心）
 # ═══════════════════════════════════════════════════════
 
-async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id: str = ""):
+async def run_agent_sse(
+    message: str,
+    history: list[dict],
+    api_key: str,
+    user_id: str = "",
+    *,
+    audit_user_id: int | None = None,
+    username: str = "",
+    request_id: str = "",
+    conversation_id: str | None = None,
+):
     """
     Agent 循环的 SSE 版本（事件驱动）。
     AgentLoop 产出事件对象，这里转换为前端 SSE 帧
     （{"type": "thinking"|"sources"|"text"|"done"|"error", ...}）。
-    user_id 用于 Redis 持久化历史（可选）。
+
+    user_id 用于 Redis 持久化历史；audit_* 用于按用户落库，
+    两者都由 /chat 从登录会话生成，不接受前端传值。
     """
+    trace = (
+        QATrace(
+            user_id=audit_user_id,
+            username=username,
+            question=message,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            history=history,
+        )
+        if audit_user_id is not None
+        else None
+    )
     agent = AgentLoop(api_key=api_key)
     last_answer = ""
 
@@ -293,6 +342,13 @@ async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id
             cached_sources = cached.get("sources") or []
             cached_thinking = cached.get("thinking") or []
             logger.info("缓存命中 key=%s 答案%d字 来源%d条", cache_key, len(answer), len(cached_sources))
+
+            if trace is not None:
+                trace.mode = "cache"
+                trace.on_thinking("⚡ 命中缓存（重复问题，直接复用上次回答）")
+                trace.on_text(answer)
+                trace.on_done(cached_thinking, cached_sources)
+
             if cached_sources:
                 yield {"type": "sources", "docs": cached_sources}
             yield {"type": "thinking", "step": "⚡ 命中缓存（重复问题，直接复用上次回答）"}
@@ -303,16 +359,23 @@ async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id
             # 命中也是一次真实提问，照常持久化到历史与日志
             await _save_to_redis(user_id, message, answer)
             _log_to_txt(user_id, message, answer)
+            record_qa_trace(trace)
             return
 
     try:
         async for event in agent.run_stream(message, history):
             if isinstance(event, ThinkingEvent):
+                if trace is not None:
+                    trace.on_thinking(event.step)
                 yield {"type": "thinking", "step": event.step}
             elif isinstance(event, ToolCallEvent):
+                if trace is not None:
+                    trace.on_tool_call(event.tool, event.args)
                 step = f"🔧 调用工具: `{event.tool}({json.dumps(event.args, ensure_ascii=False)})`"
                 yield {"type": "thinking", "step": step}
             elif isinstance(event, ToolResultEvent):
+                if trace is not None:
+                    trace.on_tool_result(event.tool, event.success, event.output, event.sources)
                 if event.sources:
                     yield {"type": "sources", "docs": event.sources}
                     step = f"📋 检索到 {len(event.sources)} 条相关结果"
@@ -322,8 +385,12 @@ async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id
             elif isinstance(event, TextEvent):
                 # 真流式：后端已按 LLM 输出增量逐个发 TextEvent，这里直接转发
                 last_answer += event.content
+                if trace is not None:
+                    trace.on_text(event.content)
                 yield {"type": "text", "content": event.content}
             elif isinstance(event, DoneEvent):
+                if trace is not None:
+                    trace.on_done(event.thinking, event.sources)
                 yield {"type": "done", "thinking": event.thinking, "sources": event.sources}
                 # ── 持久化：Redis + TXT ──
                 await _save_to_redis(user_id, message, last_answer)
@@ -332,11 +399,18 @@ async def run_agent_sse(message: str, history: list[dict], api_key: str, user_id
                 if QUERY_CACHE:
                     await _cache_set(_cache_key(message), last_answer, event.sources or [], event.thinking or [])
             elif isinstance(event, ErrorEvent):
+                if trace is not None:
+                    trace.on_error(event.message)
                 yield {"type": "error", "message": event.message}
     except Exception:
         logger.exception("Agent SSE 异常")
+        if trace is not None:
+            trace.on_error("服务内部异常")
         # 不把内部异常原文透传给客户端（可能泄露路径/堆栈），统一友好文案
         yield {"type": "error", "message": "服务内部异常，请稍后重试。"}
+    finally:
+        # 正常完成、异常、客户端断开都会走到这里；客户端断开时 status 保持 aborted
+        record_qa_trace(trace)
 
 
 # ── Redis 辅助 ──
@@ -402,11 +476,14 @@ def _log_to_txt(user_id: str, question: str, answer: str) -> None:
 # ═══════════════════════════════════════════════════════
 
 @app.get("/")
-async def root():
-    """首页 → chat.html"""
-    chat_html = _STATIC_DIR / "chat.html"
+async def root(request: Request):
+    """首页：未登录跳登录；已登录返回 web/chat.html。"""
+    if optional_user(request) is None:
+        return RedirectResponse(url="/login?next=/", status_code=303)
+
+    chat_html = _WEB_DIR / "chat.html"
     if chat_html.exists():
-        return FileResponse(chat_html)
+        return FileResponse(chat_html, headers={"Cache-Control": "no-store"})
     return HTMLResponse("<h1>chat.html not found</h1>", status_code=404)
 
 
@@ -426,26 +503,52 @@ async def health():
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest, api_key: str = Depends(_verify_api_key)):
-    """SSE 流式对话（支持多轮记忆：前端 history + Redis 服务端持久化）"""
-    _request_id_var.set(uuid.uuid4().hex[:12])  # request_id：贯穿本次请求全链路日志
+async def chat(req: ChatRequest, user: dict = Depends(require_user)):
+    """SSE 流式对话（登录会话鉴权；服务端自己的 DeepSeek key）"""
+    request_id = uuid.uuid4().hex[:12]
+    _request_id_var.set(request_id)  # 贯穿本次请求全链路日志
+
+    api_key = os.getenv("API_KEY", "")
+    if not api_key:
+        logger.error("服务端未配置 API_KEY，拒绝 /chat")
+        raise HTTPException(status_code=500, detail="服务端未配置 API Key")
+
+    # 每日额度：所有被接受的请求都计数（含缓存命中），用于防滥用
+    limit = daily_quota_limit()
+    if not try_consume_daily_quota(int(user["id"]), limit):
+        raise HTTPException(
+            status_code=429,
+            detail=f"今日提问次数已达上限（{limit} 次），明天再来吧",
+        )
+
+    # 身份只来自会话，前端传的 user_id 一律忽略
+    user_id = f"acct:{user['id']}"
 
     # ── 合并历史：Redis 服务端历史 + 前端会话历史 ──
-    redis_history = await _load_redis_history(req.user_id)
+    redis_history = await _load_redis_history(user_id)
     frontend_history = req.history or []
 
     # 去重合并：前端历史更近，优先保留；Redis 历史补充早期消息
     if redis_history and not frontend_history:
         # 前端没传历史（页面刷新后首次对话），用 Redis 历史
         merged_history = redis_history
-        logger.info("用户 %s：加载 Redis 历史 %d 条", req.user_id, len(redis_history))
+        logger.info("用户 %s：加载 Redis 历史 %d 条", user_id, len(redis_history))
     elif frontend_history:
         merged_history = frontend_history
     else:
         merged_history = []
 
     async def event_stream():
-        async for event in run_agent_sse(req.message, merged_history, api_key, req.user_id):
+        async for event in run_agent_sse(
+            req.message,
+            merged_history,
+            api_key,
+            user_id,
+            audit_user_id=int(user["id"]),
+            username=user["username"],
+            request_id=request_id,
+            conversation_id=req.conversation_id,
+        ):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -650,6 +753,70 @@ async def kb_stats():
     except Exception:
         logger.exception("KB 统计失败")
         return JSONResponse({"detail": "知识库统计失败，请稍后重试"}, status_code=500)
+
+
+# ═══════════════════════════════════════════════════════
+# 管理员：问答审计
+# ═══════════════════════════════════════════════════════
+
+@app.get("/admin/audit")
+async def admin_audit(
+    user_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    _: str = Depends(_verify_api_key),
+):
+    """按用户 / 时间 / 状态查问答日志（X-API-Key 保护）。"""
+    total, items = query_audit(
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+        date_from=date_from,
+        date_to=date_to,
+        status=status,
+    )
+    return {
+        "total": total,
+        "limit": min(500, max(1, int(limit))),
+        "offset": max(0, int(offset)),
+        "items": items,
+    }
+
+
+@app.get("/admin/audit/export")
+async def admin_audit_export(
+    fmt: str = "jsonl",
+    user_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
+    _: str = Depends(_verify_api_key),
+):
+    """导出问答日志为 JSONL / CSV（X-API-Key 保护）。"""
+    fmt = (fmt or "jsonl").strip().lower()
+    if fmt not in ("jsonl", "csv"):
+        raise HTTPException(status_code=400, detail="fmt 只能是 jsonl 或 csv")
+
+    rows = export_audit_rows(
+        fmt=fmt,
+        user_id=user_id,
+        date_from=date_from,
+        date_to=date_to,
+        status=status,
+    )
+    media_type = (
+        "text/csv; charset=utf-8" if fmt == "csv"
+        else "application/x-ndjson; charset=utf-8"
+    )
+    filename = f"qa_audit_{datetime.now():%Y%m%d_%H%M%S}.{fmt}"
+    return StreamingResponse(
+        rows,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ═══════════════════════════════════════════════════════

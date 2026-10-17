@@ -33,7 +33,8 @@
 - **编排**：全手写（ReAct 工具循环 + 召回自检判定循环），不依赖编排框架
 - **LLM**：DeepSeek（Anthropic 兼容 Tool Use 格式）
 - **记忆**：Redis（可选，LPUSH + EXPIRE 30 分钟）
-- **前端**：原生 HTML/CSS/JS，`static/chat.html`
+- **前端**：原生 HTML + ES Modules + Tailwind CSS v4（CLI 构建），无 React
+- **账号 / 日志**：SQLite（`db.py`）+ bcrypt 密码哈希 + HMAC 签名 HttpOnly Cookie
 
 ## 目录结构
 
@@ -60,7 +61,19 @@ rag_chat/
 ├── eval_baseline.py        # 评测：6 题基准真实链路（检索 + LLM）
 ├── eval_score.py           # 评测：60 分制打分器
 ├── eval_guard_probe.py     # 评测：召回自检能力探测（硬负例 / 无关题 / 正例）
-├── static/chat.html        # 聊天前端（SSE 流式 + 参考来源卡片）
+├── auth.py                 # 注册 / 登录 / HMAC 会话 Cookie
+├── db.py                   # SQLite：users / usage_daily / qa_audit
+├── audit.py                # 问答审计采集（QATrace）与查询导出
+├── web/
+│   ├── login.html          # 登录 / 注册页（仅经路由提供）
+│   └── chat.html           # 聊天页（仅登录后经 / 提供）
+├── static/
+│   ├── js/                 # 前端 ES Modules（api/store/render/sidebar/chat/main/login）
+│   ├── css/tailwind.css    # Tailwind 构建产物（需提交）
+│   ├── vendor/             # marked / lucide 本地托管（需提交）
+│   └── admin.html          # 爬虫管理面板
+├── assets/tailwind.input.css  # Tailwind 源文件
+├── scripts/copy-vendor.mjs    # 复制 marked / lucide UMD 到 static/vendor
 ├── tests/                  # pytest 测试
 ├── requirements.txt
 └── .env.example
@@ -73,10 +86,11 @@ rag_chat/
 ```bash
 cd rag_chat
 pip install -r requirements.txt
-cp .env.example .env    # 填入 DeepSeek API Key
+npm install && npm run build   # 生成 static/css/tailwind.css 并复制 vendor
+cp .env.example .env    # 填入 DeepSeek API Key，并设置 SECRET_KEY
 ```
 
-`.env` 配置：
+`.env` 关键配置：
 
 ```ini
 API_KEY=你的DeepSeek_API密钥
@@ -84,9 +98,14 @@ API_URL=https://api.deepseek.com/anthropic/v1/messages
 MODEL_NAME=deepseek-v4-flash
 TEMPERATURE=0.3
 REDIS_URL=redis://localhost:6379
+
+# 会话签名密钥（必填，否则重启后所有登录失效）
+SECRET_KEY=用 python -c "import secrets; print(secrets.token_urlsafe(48))" 生成
+DAILY_MESSAGE_QUOTA=50     # 每账号每日提问上限，0 = 不限
+REGISTER_INVITE_CODE=      # 留空 = 任何人可注册
 ```
 
-> `.env` 已被 `.gitignore` 排除，不会提交。
+> `.env` 已被 `.gitignore` 排除，不会提交。`data/rag_app.db` 含账号与问答原文，同样已被忽略。
 
 ### 2. 启动服务
 
@@ -94,7 +113,7 @@ REDIS_URL=redis://localhost:6379
 python app_fastapi.py
 ```
 
-访问 http://127.0.0.1:8000 即聊天前端；健康检查 http://127.0.0.1:8000/health 返回 `kb_chunks`。
+访问 http://127.0.0.1:8000 → 未登录会跳转 `/login`，注册（用户名 2-10 个英文字母、密码至少 8 位）后进入聊天页。健康检查 http://127.0.0.1:8000/health 返回 `kb_chunks`。
 
 ### 3. 构建知识库（三选一）
 
@@ -128,21 +147,37 @@ python app_fastapi.py
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/` | 聊天前端页面 |
+| GET | `/` | 聊天页；未登录 303 → `/login?next=/` |
+| GET | `/login` | 登录 / 注册页；已登录 303 → `/` |
+| GET | `/api/auth-config` | 公开：密码长度、是否需邀请码 |
+| POST | `/api/register` | 注册（201，自动登录；重名 409） |
+| POST | `/api/login` | 登录（失败统一 401「用户名或密码错误」） |
+| POST | `/api/logout` | 清会话 Cookie |
+| GET | `/api/me` | 当前用户 + 今日额度 |
 | GET | `/health` | 健康检查（含 `kb_chunks`） |
-| POST | `/chat` | SSE 流式对话（Body：`user_id` / `message` / `history`） |
-| POST | `/scrape` | 触发爬虫（确认） |
+| POST | `/chat` | SSE 流式对话（**需登录 Cookie**，Body：`message` / `history` / `conversation_id`） |
+| POST | `/scrape` | 触发爬虫（确认，需 `X-API-Key`） |
 | POST | `/scrape/start` | 实际执行爬虫（后台运行、立即返回；已在跑则 409） |
 | GET | `/scrape/status` | 爬虫 / 自动更新状态（下次触发时刻、上次爬取时间、是否在跑） |
 | GET | `/kb-stats` | 知识库统计（含 `unaccounted_chunks`） |
+| GET | `/admin/audit` | 问答审计查询（需 `X-API-Key`；可按 user_id / 日期 / status 过滤） |
+| GET | `/admin/audit/export` | 导出 JSONL / CSV（需 `X-API-Key`） |
 
-`POST /chat` 请求示例：
+`POST /chat` 请求示例（先登录拿到 `rag_session` Cookie）：
 
 ```json
-{ "user_id": "test", "message": "河南工学院诚聘高层次人才有哪些待遇？" }
+{ "message": "河南工学院诚聘高层次人才有哪些待遇？", "conversation_id": "abc123" }
 ```
 
-响应为 SSE 流：`thinking` / `sources` / `text` / `done` 四类事件，前端据此渲染思考过程、参考来源和流式答案。
+响应为 SSE 流：`thinking` / `sources` / `text` / `done` / `error` 事件，前端据此渲染思考过程、参考来源和流式答案。
+
+> 用户身份只取自会话 Cookie；请求体里即使带 `user_id` 也会被忽略。每日额度默认 50 次/账号，超限返回 429。
+
+### 账号与问答日志
+
+- 用户表与问答审计同存 `data/rag_app.db`（SQLite），按 `user_id` 逻辑隔离。
+- 每次问答落库：问题、答案、思考步骤、工具调用（参数 / 结果 / 耗时）、来源、错误、`request_id`、`conversation_id`、耗时。
+- 审计接口需管理员 `X-API-Key`，普通用户 Cookie 无法访问；落库失败只记日志，不影响对话。
 
 ### 首句净化（为什么回答开头不再是英文）
 

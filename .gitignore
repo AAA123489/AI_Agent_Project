@@ -12,6 +12,9 @@ app.log
 __pycache__/
 *.pyc
 
+# 前端构建依赖（构建产物 static/css 与 static/vendor 需要提交）
+node_modules/
+
 # Chroma 向量数据库
 chroma_db/
 

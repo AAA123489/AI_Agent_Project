@@ -1,0 +1,61 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* 扫描登录页、聊天页和所有前端模块里的 class */
+@source "../web/**/*.html";
+@source "../static/js/**/*.js";
+
+@theme {
+  --color-sidebar: #f9f9f9;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-white text-neutral-900 antialiased;
+  }
+}
+
+@utility scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* 消息区和历史列表的细滚动条（滚动条样式 Tailwind 无法直接表达） */
+#messages::-webkit-scrollbar,
+#historyList::-webkit-scrollbar {
+  width: 8px;
+}
+
+#messages::-webkit-scrollbar-thumb,
+#historyList::-webkit-scrollbar-thumb {
+  background-color: rgb(212 212 212);
+  border-radius: 9999px;
+}
+
+#messages::-webkit-scrollbar-track,
+#historyList::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 聊天回答里的代码块和表格允许横向滚动 */
+.prose-chat pre {
+  overflow-x: auto;
+}
+
+.prose-chat table {
+  display: block;
+  overflow-x: auto;
+}
+
+.prose-chat :where(a) {
+  @apply text-blue-600 underline underline-offset-2;
+}

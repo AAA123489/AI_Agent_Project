@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Chat</title>
+  <link rel="stylesheet" href="/static/css/tailwind.css">
+</head>
+<body class="h-full overflow-hidden bg-white text-neutral-900">
+  <div class="flex h-full">
+
+    <!-- ════ 侧边栏 ════ -->
+    <aside id="sidebar"
+      class="fixed inset-y-0 left-0 z-40 flex w-[280px] -translate-x-full flex-col border-r border-neutral-200 bg-sidebar transition-transform duration-200 md:static md:translate-x-0">
+
+      <!-- Header -->
+      <div class="flex items-center justify-between px-4 pb-2 pt-4">
+        <span class="text-[17px] font-bold tracking-tight text-blue-600">RAG Chat</span>
+        <div class="flex items-center gap-1">
+          <button id="searchToggle" type="button" title="搜索对话"
+            class="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-200/60 hover:text-neutral-700">
+            <i data-lucide="search" class="h-[18px] w-[18px]"></i>
+          </button>
+          <button id="sidebarClose" type="button" title="收起侧边栏"
+            class="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-200/60 hover:text-neutral-700">
+            <i data-lucide="panel-left" class="h-[18px] w-[18px]"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- 搜索框（点放大镜展开） -->
+      <div id="searchBox" class="hidden px-3 pb-2">
+        <input id="searchInput" type="text" placeholder="搜索对话…"
+          class="w-full rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-[13px] text-neutral-700 outline-none placeholder:text-neutral-400 focus:border-blue-400">
+      </div>
+
+      <!-- 新对话 -->
+      <div class="px-3 pb-2 pt-1">
+        <button id="newChatBtn" type="button"
+          class="flex w-full items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-4 py-2.5 text-[14px] font-medium text-neutral-800 shadow-sm transition hover:bg-neutral-100 active:scale-[.99]">
+          <i data-lucide="plus" class="h-4 w-4"></i>
+          <span>开启新对话</span>
+        </button>
+      </div>
+
+      <!-- 历史列表 -->
+      <nav id="historyList" class="scrollbar-hide flex-1 overflow-y-auto px-2 pb-2"></nav>
+
+      <!-- 用户区 -->
+      <div class="border-t border-neutral-200 px-4 py-3">
+        <div class="flex items-center gap-3">
+          <div id="userAvatar"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[13px] font-semibold uppercase text-white"></div>
+          <div class="min-w-0 flex-1">
+            <div id="userName" class="truncate text-[13px] font-medium text-neutral-800"></div>
+            <div id="quotaHint" class="truncate text-[11px] text-neutral-400"></div>
+          </div>
+          <button id="logoutBtn" type="button" title="退出登录"
+            class="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-200/60 hover:text-neutral-700">
+            <i data-lucide="log-out" class="h-4 w-4"></i>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 移动端遮罩 -->
+    <div id="sidebarOverlay" class="fixed inset-0 z-30 hidden bg-black/30 md:hidden"></div>
+
+    <!-- ════ 主聊天区 ════ -->
+    <main class="flex min-w-0 flex-1 flex-col bg-white">
+
+      <!-- 顶栏 -->
+      <header class="flex shrink-0 items-center gap-3 border-b border-neutral-100 px-4 py-3 md:px-6">
+        <button id="sidebarOpen" type="button" title="展开侧边栏"
+          class="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-100">
+          <i data-lucide="panel-left" class="h-[18px] w-[18px]"></i>
+        </button>
+        <h1 id="chatTitle" class="min-w-0 flex-1 truncate text-[15px] font-medium text-neutral-800">新对话</h1>
+        <span id="statusBadge"
+          class="hidden shrink-0 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] text-neutral-500 sm:inline">连接中…</span>
+      </header>
+
+      <!-- 免责声明 -->
+      <div class="shrink-0 border-b border-neutral-100 bg-neutral-50/60 px-4 py-2 text-center text-[11px] leading-relaxed text-neutral-400">
+        本系统为个人学习项目，非河南工学院官方应用。信息源自官网公开数据，仅供参考。
+      </div>
+
+      <!-- 消息区 -->
+      <div id="messages" class="flex-1 overflow-y-auto scroll-smooth px-4 py-6 md:px-8"></div>
+
+      <!-- 输入区 -->
+      <div class="shrink-0 px-4 pb-4 pt-1 md:px-8 md:pb-6">
+        <form id="inputForm"
+          class="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-200 bg-white p-2 shadow-sm transition focus-within:border-neutral-300 focus-within:shadow-md">
+          <textarea id="input" rows="1" maxlength="8000"
+            placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行）"
+            class="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-3 py-2 text-[15px] leading-relaxed text-neutral-900 outline-none placeholder:text-neutral-400"></textarea>
+          <button id="sendBtn" type="submit"
+            class="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-neutral-900 text-white transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
+            title="发送">
+            <i data-lucide="arrow-up" class="h-[18px] w-[18px]"></i>
+          </button>
+        </form>
+        <p class="mx-auto mt-2 max-w-3xl text-center text-[11px] text-neutral-300">
+          AI 可能会出错，重要信息请以官网原文为准
+        </p>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/lucide.min.js"></script>
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

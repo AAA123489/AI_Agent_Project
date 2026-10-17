@@ -1,4 +1,6 @@
 beautifulsoup4>=4.12
+# 账号密码哈希（先 SHA-256 再 bcrypt，规避 72 字节上限）
+bcrypt==5.0.0
 lxml>=5.0
 # 混合检索：jieba 中文分词 + rank_bm25 OKAPI 打分（BM25 关键词召回）
 jieba>=0.42.1

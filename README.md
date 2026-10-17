@@ -150,7 +150,8 @@ LLM 生成（SSE 逐 delta 下发，经「首句净化」闸门）
 | LLM | DeepSeek（Anthropic 兼容 Tool Use 格式） |
 | 记忆 / 缓存 | Redis 7 |
 | 网页解析 | BeautifulSoup + lxml（HTML → 纯文本，按栏目配选择器） |
-| 前端 | 原生 HTML/CSS/JS（`static/chat.html`、`admin.html`） |
+| 前端 | 原生 HTML + ES Modules + Tailwind CSS v4（`web/`、`static/js/`） |
+| 账号 / 日志 | SQLite + bcrypt + HMAC 签名 HttpOnly Cookie（`auth.py`、`db.py`、`audit.py`） |
 
 ---
 
@@ -162,6 +163,7 @@ LLM 生成（SSE 逐 delta 下发，经「首句净化」闸门）
 git clone https://github.com/AAA123489/AI_Agent_Project.git
 cd AI_Agent_Project/rag_chat
 pip install -r requirements.txt     # Python 3.12+
+npm install && npm run build        # Tailwind CSS + 本地 vendor（构建产物已提交，改前端才需重跑）
 ```
 
 ### 2. 配置
@@ -170,7 +172,7 @@ pip install -r requirements.txt     # Python 3.12+
 cp .env.example .env
 ```
 
-`.env` 里**必填**的只有 `API_KEY`；其余都有默认值，改配置不用改代码。
+`.env` 里**必填**的是 `API_KEY`；对外部署还应设置 `SECRET_KEY`（否则服务重启后所有登录失效）。其余都有默认值，改配置不用改代码。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -192,6 +194,13 @@ cp .env.example .env
 | `SCRAPE_SCHEDULE_PAGES` | `1` | 日常每类最多翻几页——**是上限不是固定成本**，遇到已爬内容即停 |
 | `SCRAPE_CATCHUP_PAGES` | `3` | 启动补跑每类最多翻几页（追赶要翻更深，故单独配一个大值） |
 | `SCRAPE_CATCHUP_DAYS` | `3` | 距上次成功爬取超过这么多天则启动补跑一次；`0` = 关闭 |
+| `SECRET_KEY` | 随机（仅本进程） | **部署必填**，会话 Cookie 的 HMAC 签名密钥 |
+| `SESSION_TTL_SECONDS` | `604800` | 登录有效期（7 天） |
+| `COOKIE_SECURE` | `auto` | `auto` 按协议判断 / `true` / `false` |
+| `MIN_PASSWORD_LEN` | `8` | 注册密码最短长度 |
+| `DAILY_MESSAGE_QUOTA` | `50` | 每账号每日提问上限，`0` = 不限 |
+| `REGISTER_INVITE_CODE` | 空 | 填写后注册必须持码，用于控量 |
+| `APP_DB_PATH` | `data/rag_app.db` | 账号 / 额度 / 审计数据库路径 |
 
 ### 3. 构建知识库（三选一）
 
@@ -216,7 +225,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 115 条，零网络
+python -m pytest tests/ -v      # 146 条，零网络
 ```
 
 ---
@@ -225,13 +234,21 @@ python -m pytest tests/ -v      # 115 条，零网络
 
 | 方法 | 路径 | 说明 | 鉴权 |
 |------|------|------|:---:|
-| GET | `/` | 聊天前端页面 | — |
+| GET | `/` | 聊天页；未登录 303 → `/login` | 登录 Cookie |
+| GET | `/login` | 登录 / 注册页 | — |
+| GET | `/api/auth-config` | 密码长度、是否需邀请码 | — |
+| POST | `/api/register` | 注册（201，自动登录） | — |
+| POST | `/api/login` | 登录（失败统一 401） | — |
+| POST | `/api/logout` | 清会话 Cookie | — |
+| GET | `/api/me` | 当前用户 + 今日额度 | 登录 Cookie |
 | GET | `/health` | 健康检查（含 `kb_chunks`） | — |
-| POST | `/chat` | SSE 流式对话 | ✅ |
-| POST | `/scrape` | 触发爬虫（确认） | ✅ |
-| POST | `/scrape/start` | 实际执行爬虫（后台运行、立即返回；已在跑则 409） | ✅ |
+| POST | `/chat` | SSE 流式对话 | 登录 Cookie |
+| POST | `/scrape` | 触发爬虫（确认） | `X-API-Key` |
+| POST | `/scrape/start` | 实际执行爬虫（后台运行、立即返回；已在跑则 409） | `X-API-Key` |
 | GET | `/scrape/status` | 自动更新状态（下次触发时刻 / 上次爬取时间 / 是否在跑） | — |
 | GET | `/kb-stats` | 知识库统计（含 `unaccounted_chunks`） | — |
+| GET | `/admin/audit` | 问答审计查询（按用户 / 日期 / 状态过滤） | `X-API-Key` |
+| GET | `/admin/audit/export` | 导出 JSONL / CSV | `X-API-Key` |
 
 > `unaccounted_chunks` 正常**恒为 0**：它统计"不属于任何爬虫分类"的块。
 > 非 0 就说明库里有来源不明的内容，别放过——所有东西都同住一个 collection，
@@ -240,8 +257,10 @@ python -m pytest tests/ -v      # 115 条，零网络
 **`POST /chat` 请求示例**：
 
 ```json
-{ "user_id": "test", "message": "河南工学院诚聘高层次人才有哪些待遇？" }
+{ "message": "河南工学院诚聘高层次人才有哪些待遇？", "conversation_id": "abc123" }
 ```
+
+> 身份取自 `rag_session` Cookie，请求体里的 `user_id` 会被忽略。每次问答（问题、答案、思考、工具调用、来源、耗时）落到 `qa_audit` 表。
 
 **SSE 响应事件流**：
 
@@ -645,7 +664,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 115 条，零网络
+python -m pytest tests/ -v      # 146 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
@@ -812,9 +831,15 @@ ChromaDB 里**——14 篇学校新闻（17:14–17:15 标记）+ 6 篇马克思
 
 ```
 rag_chat/
-├── app_fastapi.py          # 【唯一入口】FastAPI SSE 后端，serve chat.html（端口 8000）
+├── app_fastapi.py          # 【唯一入口】FastAPI SSE 后端（端口 8000）
 ├── app_backend.py          # 核心逻辑：Agent 循环 / LLM 调用 / 工具 / 检索 / 隐私规则
+├── auth.py                 # 注册 / 登录 / HMAC 会话 Cookie
+├── db.py                   # SQLite：users / usage_daily / qa_audit
+├── audit.py                # 问答审计采集与查询导出
 ├── redis_client.py         # Redis 短期记忆（可选）
+├── web/                    # login.html / chat.html（只经路由提供）
+├── static/js/              # 前端 ES Modules
+├── static/css/tailwind.css # Tailwind 构建产物
 ├── src/
 │   ├── vector_store.py     # Chroma 向量库封装（增删查、相似度检索）
 │   ├── recall_guard.py     # 召回自检（判定循环 + 改写重检环，全手写）
@@ -834,7 +859,8 @@ rag_chat/
 ├── eval_score.py           # 评测：60 分制打分器
 ├── eval_guard_probe.py     # 评测：召回自检能力探测（硬负例 / 无关题 / 正例）
 ├── static/
-│   ├── chat.html           # 聊天前端（SSE 流式 + 参考来源卡片）
+│   ├── js/                 # api / store / render / sidebar / chat / main / login
+│   ├── vendor/             # marked + lucide（本地托管，不依赖 CDN）
 │   └── admin.html          # 管理面板（爬虫 / 库统计）
 ├── tests/                  # pytest 115 条
 ├── docs/                   # 改进记录（累计变更日志，论文写作素材）

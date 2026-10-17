@@ -13,7 +13,7 @@ BATCH_REST_MAX = 480                 # 最大休息秒数（8分钟）
 # 每爬完一页列表，随机休息 3~8 分钟，再翻下一页
 REQUEST_TIMEOUT_SECONDS = 30         # 单次请求超时
 MAX_RETRIES = 2                      # 失败重试次数
-RETRY_BACKOFF_BASE = 5               # 重试退避基数（5s → 10s）
+RETRY_BACKOFF_BASE = 5               # 重试退避基数，第 n 次重试等待 5×n 秒（线性，非指数）
 
 # ── 日期过滤 ──
 DATE_FILTER_DAYS = 730               # 仅保留近 2 年的内容
