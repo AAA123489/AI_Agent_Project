@@ -19,6 +19,7 @@
 | ✂️ 智能分块 | 自研递归切分器（段落→句子→空格），重叠窗口，参数可调 |
 | 📄 网页解析 | HTML → 纯文本（动易/JSP CMS 适配，按栏目配选择器）；爬虫是唯一入库通路 |
 | 🔢 混合检索 | 向量 + BM25 双路召回 + **RRF 名次融合**（`k=60`）；年份过滤 / 文本去重 / 罕见词精确兜底 / 同文档补块 |
+| 🕐 相对时间 | 「昨天 / 最近 / 上周 / 本月」先确定性解析成日期区间再检索（`src/time_range.py`），泛问「最近有什么通知」按日期倒序列出；不再让模型拿旧文冒充昨天 |
 | 🛡️ 召回自检 | 判定召回是否支撑回答，不支撑则**拒答**而非编造；不充分时改写 query 重检（`src/recall_guard.py`） |
 | 💬 SSE 流式对话 | Agent 循环 + 工具调用，答案附 📎 参考来源（日期·文件名·🔗查看原文） |
 | 🧹 首句净化 | 扣住模型发起工具调用前的英文旁白（`src/stream_gate.py`），不让它流到用户屏幕 |
@@ -338,7 +339,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 149 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
+python -m pytest tests/ -v      # 170 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_time_range.py 相对时间解析、test_list_entry_regressions.py 列表页日期提取、test_html_parser_title.py 标题后缀截断、test_scraper_dead_link.py 死链页识别、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
 ```
 
 ## 许可证

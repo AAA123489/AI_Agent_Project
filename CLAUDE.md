@@ -29,10 +29,10 @@ RAG/
 
 ### 当前状态
 
-**知识库**：全量爬虫已完成，1195 篇文档 / 13 分类 → **5919 块 / 1194 source**。分块 `CHUNK_SIZE=300 / OVERLAP=50`（消融最优）。
+**知识库**：全量爬虫已完成，**1594 篇文档 / 17 分类 → 7833 块**。分块 `CHUNK_SIZE=300 / OVERLAP=50`（消融最优）。日期元数据 `publish_date`（展示）+ `date_int`（Chroma 数值区间过滤）已覆盖 **98.5%** 的块（2026-10-17 用 `backfill_dates.py` 补齐历史文档，同日用 `recover_missing.py` 补回 184 篇「已爬但未入库」的孤儿标记文章）。
 
 > **监控口径**：`GET /kb-stats` 的 `unaccounted_chunks` 必须恒为 **0**
-> （= 总数 − 13 个爬虫分类之和）。非 0 就是库里有来源不明的内容。
+> （= 总数 − 17 个爬虫分类之和）。非 0 就是库里有来源不明的内容。
 > 2026-09-20 曾靠这个差额才发现 5 篇测试上传的文档（378 块，含外校名单）在库里躺了半个月——
 > 当时线上是 6297 块，而所有评测成绩都是 5919 块那套量的。
 > **上传通路已于 2026-10 整条移除**（当时用 `DELETE /upload/{文件名}` 撤销）；详见 [docs/改进记录.md](rag_chat/docs/改进记录.md) 第 18、21 条。
@@ -41,6 +41,7 @@ RAG/
 - `TEMPERATURE=0.3`、`MAX_TOKENS=1000`、`TOP_K=8`、`KB_SUBJECT_SCHOOL=河南工学院`
 - `RETRIEVAL_MODE=hybrid`（向量 + BM25 RRF 融合）
 - `RECALL_GUARD=on`（召回自检，2026-10-16 默认值由 off 翻为 on——消融数据支持开：负例 0/6 → 6/6、正例零误拒）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环，环被消融否决保持 1）
+- `RECENT_WINDOW_DAYS=30`（「最近/近来/最新」这类没有确定所指的词，统一按最近 N 天处理；带数字的「最近三天」不受影响）
 - `SCRAPE_SCHEDULE_ENABLED=on`（自动更新知识库，每天 10:00 增量爬取）、`SCRAPE_SCHEDULE_PAGES=1`（日常页数上限）、`SCRAPE_CATCHUP_PAGES=3`（补跑页数上限）、`SCRAPE_CATCHUP_DAYS=3`（启动补跑阈值，0 = 关）
 
 **评测成绩单**：

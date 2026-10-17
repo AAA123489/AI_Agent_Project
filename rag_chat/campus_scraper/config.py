@@ -98,18 +98,22 @@ CATEGORIES = [
     },
     # ── 外国语学院 ──
     {
+        # 2026-10 修正：/index/tzgg.htm 是旧模板页，最新只到 2023-09；
+        # 站内现用 tzgg1.htm（2026 年通知都在这里）
         "name": "外国语学院通知",
         "icon": "🌐",
         "base_url": "https://wyx.hait.edu.cn",
-        "list_path": "/index/tzgg.htm",
+        "list_path": "/index/tzgg1.htm",
         "is_subsite": True,
         "site_label": "外国语学院",
     },
     {
+        # 2026-10 修正：/index/xyxw.htm 同样是旧模板页（最新 2023）；
+        # 学院动态现挂在 xydt.htm
         "name": "外国语学院新闻",
         "icon": "🌐",
         "base_url": "https://wyx.hait.edu.cn",
-        "list_path": "/index/xyxw.htm",
+        "list_path": "/index/xydt.htm",
         "is_subsite": True,
         "site_label": "外国语学院",
     },
@@ -150,10 +154,15 @@ CATEGORIES = [
     },
     # ── 材料科学与工程学院 ──
     {
+        # 2026-10 修正：/index/xyxw.htm 是 VSB 动态模板，静态 HTML 里没有文章链接，
+        # 爬虫会判定「第 1 页无文章」。首页的资讯区块是静态的，故改从首页取，
+        # 并用 url_contains 只保留 channel 1147（学院新闻），避免混入其他栏目。
+        # 首页没有分页，只能覆盖最新几篇；日常增量足够。
         "name": "材料科学与工程学院新闻",
         "icon": "🔬",
         "base_url": "https://clxnew.hait.edu.cn",
-        "list_path": "/index/xyxw.htm",
+        "list_path": "/index.htm",
+        "url_contains": "info/1147/",
         "is_subsite": True,
         "site_label": "材料科学与工程学院",
     },

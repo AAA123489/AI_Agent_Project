@@ -50,6 +50,27 @@ _DATE_PATTERNS = [
 ]
 
 
+_SITE_SUFFIX_MAX_LEN = 30
+
+
+def _strip_site_suffix(raw: str) -> str:
+    """去掉 <title> 末尾的站点后缀（如「-欢迎访问河南工学院」「-教务处（学位办）」）。
+
+    不能按**第一个**分隔符截断：标题里的学年区间「2025-2026」也含连字符，
+    按第一个截会把「关于公布2025-2026学年…的通知」砍成「关于公布2025」
+    （实测教务处多篇标题被污染，引用来源里只剩半句）。
+    这里只看最后一个分隔符后的尾巴，且仅当它像站点名（短、不含数字）时才截。
+    """
+    raw = raw.strip()
+    m = re.search(r"[-—|]([^-—|]*)$", raw)
+    if not m:
+        return raw
+    tail = m.group(1).strip()
+    if not tail or len(tail) > _SITE_SUFFIX_MAX_LEN or re.search(r"\d", tail):
+        return raw
+    return raw[: m.start()].strip(" -—|")
+
+
 def _normalize_date(date_str: str) -> str:
     """将各种日期格式统一为 YYYY-MM-DD。"""
     if not date_str:
@@ -215,13 +236,12 @@ def parse_html(html: str, url: str = "") -> tuple[str, dict]:
     if not title:
         title_tag = soup.find("title")
         if title_tag:
-            raw = title_tag.get_text(strip=True)
-            title = re.sub(r"[-—\|].*$", "", raw).strip()
+            title = _strip_site_suffix(title_tag.get_text(strip=True))
 
     # ── 提取日期 ──
     publish_date = ""
     # 方式1: doctime / infotime 类
-    for cls in ["doctime", "infotime", "article_time", "news_time", "timestyle"]:
+    for cls in ["doctime", "infotime", "article_time", "article-date", "news_time", "timestyle"]:
         date_tag = soup.find(class_=re.compile(cls, re.I))
         if date_tag:
             publish_date = _normalize_date(date_tag.get_text())
@@ -252,6 +272,49 @@ def parse_html(html: str, url: str = "") -> tuple[str, dict]:
     }
 
 
+# 列表页里「单独成链接」的日期（部分子站把日期也做成指向同一文章的 <a>）
+_DATE_ONLY_RE = re.compile(
+    r"^\s*(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?\s*$"
+)
+# 标题前缀日期：既支持 2026-09-18，也支持 2026年09月18日
+_TITLE_DATE_RE = re.compile(
+    r"^\s*(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?\s*(.*)$"
+)
+
+
+def _extract_date_from_row(a_tag: Tag) -> str:
+    """在链接所在列表项（li/tr）里找发布日期。
+
+    动易各子站模板差异很大：
+    - 主站/多数学院：<span class="timestyle...">2026-10-16</span>
+    - 车辆学院：日期是 li 里的裸文本节点
+    - 教务处/智能工程学院：日期做成同 URL 的独立 <a>（由调用方按 URL 合并）
+    这里统一扫 li/tr 的文本，避免逐站写选择器。
+    """
+    row = a_tag.find_parent(["li", "tr"])
+    if row is not None:
+        # 优先看带日期/时间语义的标签，避免标题里的年份干扰
+        for tag in row.find_all(class_=re.compile(r"timestyle|date|time", re.I)):
+            d = _normalize_date(tag.get_text(" ", strip=True))
+            if d:
+                return d
+        d = _normalize_date(row.get_text(" ", strip=True))
+        if d:
+            return d
+
+    parent = a_tag.parent
+    if parent is not None and len(parent.get_text(" ", strip=True)) < 300:
+        d = _normalize_date(parent.get_text(" ", strip=True))
+        if d:
+            return d
+
+    for sib in a_tag.find_next_siblings(string=True, limit=3):
+        d = _normalize_date(sib.strip())
+        if d:
+            return d
+    return ""
+
+
 def extract_article_urls(html: str, base_url: str = "") -> list[dict]:
     """
     从列表页 HTML 提取文章 URL、标题、日期。
@@ -262,9 +325,14 @@ def extract_article_urls(html: str, base_url: str = "") -> list[dict]:
     - 分页: 共{n}条  {current}/{total}
 
     返回: [{"url": str, "title": str, "date": str}, ...]
+
+    注意：同一 URL 可能出现多个 <a>（标题、图片、以及只含日期的独立链接），
+    这里按 URL 合并成一条，日期互相补全，避免「一篇文章被当成两篇」。
     """
     soup = BeautifulSoup(html, "lxml")
-    articles = []
+    entries: dict[str, dict] = {}
+    order: list[str] = []
+    date_only: dict[str, str] = {}  # 同 URL 的「日期链接」→ 日期
 
     # ── 模式 1: 动易 CMS —— info/xxx/xxx.htm ──
     info_pattern = re.compile(r"info/\d+/\d+\.htm", re.I)
@@ -280,48 +348,62 @@ def extract_article_urls(html: str, base_url: str = "") -> list[dict]:
             continue
 
         full_url = urljoin(base_url, href)
-        title = (a_tag.get("title") or a_tag.get_text(strip=True))
+        raw_title = (a_tag.get("title") or "").strip()
+        link_text = a_tag.get_text(strip=True)
+        label = raw_title or link_text
 
-        # ── 定位日期 ──
+        # 日期独立成链接（教务处/智能工程学院等模板）：先记下来，稍后按 URL 合并
+        if _DATE_ONLY_RE.match(label) or (not raw_title and _DATE_ONLY_RE.match(link_text)):
+            d = _normalize_date(label or link_text)
+            if d:
+                date_only[full_url] = d
+            continue
+
+        title = label
         date_str = ""
-        if is_info:
-            # 动易 CMS：在 a 标签所在行中找 timestyle span
-            parent_row = a_tag.find_parent("tr")
-            if parent_row:
-                time_span = parent_row.find("span", class_=re.compile(r"timestyle\d*", re.I))
-                if time_span:
-                    date_str = _normalize_date(time_span.get_text())
-            if not date_str:
-                nearby = a_tag.find_next_sibling(string=True)
-                if nearby:
-                    date_str = _normalize_date(nearby.strip())
-        elif is_jsp:
-            # JSP 网站群：日期通常在链接附近的 <span> 或独立文本中
-            parent_row = a_tag.find_parent("tr") or a_tag.find_parent("li")
-            if parent_row:
-                # JSP 列表页日期常见格式：<span>2026-08-06</span> 或 <font>2026-08-06</font>
-                for tag_name in ("span", "font", "div"):
-                    date_tag = parent_row.find(tag_name)
-                    if date_tag:
-                        d = _normalize_date(date_tag.get_text())
-                        if d:
-                            date_str = d
-                            break
-            if not date_str:
-                # 在 a 标签后续兄弟节点中找
-                for sib in a_tag.find_next_siblings(string=True, limit=3):
-                    d = _normalize_date(sib.strip())
-                    if d:
-                        date_str = d
-                        break
 
-        articles.append({
-            "url": full_url,
-            "title": title,
-            "date": date_str,
-        })
+        # 部分子站把日期直接写在链接文字里（如「2026-09-18 学院动态…」）。
+        # 拆出来：既避免日期混进标题，也补上列表层的日期过滤依据。
+        title_date = _TITLE_DATE_RE.match(title)
+        if title_date:
+            date_str = _normalize_date(title_date.group(0))
+            title = title_date.group(4).strip()
 
-    return articles
+        # 行内日期（span.timestyle / li 裸文本 / 紧邻文本节点）
+        if not date_str:
+            date_str = _extract_date_from_row(a_tag)
+
+        entry = entries.get(full_url)
+        if entry is None:
+            entries[full_url] = {
+                "url": full_url,
+                "title": title,
+                "date": date_str,
+            }
+            order.append(full_url)
+        else:
+            # 同一 URL 的多个链接：标题取更长的（标题链接 > 图片链接），日期取先拿到的
+            if title and len(title) > len(entry["title"]):
+                entry["title"] = title
+            if date_str and not entry["date"]:
+                entry["date"] = date_str
+
+    # 用「日期链接」补全那些标题链接上没有日期的条目
+    for url, d in date_only.items():
+        if url in entries and not entries[url]["date"]:
+            entries[url]["date"] = d
+
+    return [entries[u] for u in order]
+
+
+# 文章详情页链接。分页链接绝不会是这个形状——但「更多 >」「next」这类
+# 首页区块箭头**可能**恰好指向最后一篇文章。实测材料学院首页没有分页，
+# 解析器却把一篇资讯当成了「下一页」，害得爬虫多抓一次、还差点错过后续页。
+_ARTICLE_HREF_RE = re.compile(r"info/\d+/\d+\.htm|wbnewsid=\d+", re.I)
+
+
+def _is_article_href(href: str) -> bool:
+    return bool(href and _ARTICLE_HREF_RE.search(href))
 
 
 def extract_pagination(html: str) -> dict:
@@ -355,7 +437,7 @@ def extract_pagination(html: str) -> dict:
     # ── 查找"下页"/"下一页"链接（动易 + JSP 通用） ──
     for a_tag in soup.find_all("a", string=re.compile(r"下页|下一页|next|>|»", re.I)):
         href = a_tag.get("href")
-        if href and href != "#":
+        if href and href != "#" and not _is_article_href(href):
             result["next_url"] = href
             break
 
@@ -372,7 +454,8 @@ def extract_pagination(html: str) -> dict:
                 pass
         # 查找下一页号
         next_page_tag = soup.find("a", string=str(current_page + 1))
-        if next_page_tag and next_page_tag.get("href"):
+        if next_page_tag and next_page_tag.get("href") \
+                and not _is_article_href(next_page_tag["href"]):
             result["next_url"] = next_page_tag["href"]
 
     return result

@@ -56,6 +56,19 @@ def _random_delay() -> float:
     return random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
 
 
+def filter_list_articles(
+    articles: list[dict], url_contains: str | None
+) -> list[dict]:
+    """按 URL 片段过滤列表页条目；url_contains 为空时原样返回。
+
+    用于没有独立静态列表页、只能从首页资讯区块取文章的分类
+    （如材料学院首页混着多个频道，只取 info/1147/ 的学院新闻）。
+    """
+    if not url_contains:
+        return articles
+    return [art for art in articles if url_contains in art["url"]]
+
+
 def resolve_next_url(current_url: str, next_path: str) -> str:
     """
     基于"当前列表页 URL"拼接下一页 URL。
@@ -143,8 +156,15 @@ async def scrape_article(
     category: str,
     source_site: str,
     session: aiohttp.ClientSession,
+    fallback_date: str = "",
 ) -> ArticleMetadata | None:
-    """爬取单篇文章：fetch → parse → 日期过滤。"""
+    """爬取单篇文章：fetch → parse → 日期过滤。
+
+    fallback_date 来自列表页：部分子站（教务处/智能工程学院/车辆学院）的
+    详情页根本不显示发布日期，或模板把日期放在解析器认不出的位置；
+    列表页那一行却有日期。详情页解析不到时用它兜底，否则这些分类的
+    publish_date 会 100% 为空，"最近/昨天"之类的问题就永远答不了。
+    """
     html = await fetch_page(url, session)
     if not html:
         return None
@@ -154,13 +174,20 @@ async def scrape_article(
     meta["source_site"] = source_site
 
     # 日期过滤
-    pub_date = meta.get("publish_date", "")
+    pub_date = meta.get("publish_date", "") or fallback_date
     if not _is_within_date_range(pub_date):
         logger.info("⏭ 跳过（超出日期范围）: %s [%s]", meta.get("title", url)[:50], pub_date)
         return None
 
     if not clean_text.strip():
         logger.info("⏭ 跳过（无正文内容）: %s", url)
+        return None
+
+    # 死链：动易对不存在的文章 ID 返回 200 + 一个「没有找到文章ID」的导航壳。
+    # 这类页面正文只提取出几十个字的栏目名，会被当成正常文章入库
+    # （2026-10-17 补历史文章时实测一篇标题成了「教务处（学位办、语委办）」）。
+    if "没有找到文章ID" in clean_text or "文章不存在" in clean_text:
+        logger.info("⏭ 跳过（死链/文章不存在）: %s", url)
         return None
 
     return ArticleMetadata(
@@ -235,6 +262,12 @@ async def scrape_category(
             current_url, base_url, session
         )
 
+        # 部分分类没有独立的静态列表页，只能从首页的资讯区块取；
+        # url_contains 用于只保留属于本栏目的链接（如材料学院的 info/1147/）。
+        list_articles = filter_list_articles(
+            list_articles, category_cfg.get("url_contains")
+        )
+
         if not list_articles:
             logger.info("  ⚠ [%s] 第 %d 页无文章，停止", name, page_num)
             break
@@ -281,7 +314,7 @@ async def scrape_category(
 
             article = await scrape_article(
                 url=art_url, category=name, source_site=source_site,
-                session=session,
+                session=session, fallback_date=art_date,
             )
 
             if article:

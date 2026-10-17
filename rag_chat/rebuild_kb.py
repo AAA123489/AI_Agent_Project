@@ -44,6 +44,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.vector_store import VectorStore
+from src.time_range import date_to_int
 from text_splitter import RecursiveTextSplitter, sanitize_privacy
 
 COLLECTION_NAME = "my_rag_collection"
@@ -154,6 +155,7 @@ def main() -> None:
             "category": doc["category"],
             "source_site": doc["source_site"],
             "publish_date": doc["date"],
+            "date_int": date_to_int(doc["date"]),  # 数值日期，供 Chroma 区间过滤
             "year": year,                   # 标签二：发布年份
             "url": doc["url"],
         } for _ in chunks]

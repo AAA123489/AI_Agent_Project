@@ -8,6 +8,7 @@ campus_scraper/pipeline.py — 核心桥接模块
 
 import asyncio
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.vector_store import VectorStore
+from src.time_range import date_to_int
 from text_splitter import RecursiveTextSplitter, sanitize_privacy
 
 from .config import CATEGORIES, MAX_LIST_PAGES, USER_AGENT
@@ -41,12 +43,22 @@ CHUNK_OVERLAP = 50
 # ── 知识库集合名（修复 bug：统一用 my_rag_collection） ──
 COLLECTION_NAME = "my_rag_collection"
 
+# Windows 文件名非法字符（<>:"/\|?* 与控制字符）。标题里出现 " 或 | 时
+# write_text 会直接抛 OSError: Invalid argument（实测团委新闻两篇「喜报」、
+# 一篇歌会），入库随之中断——知识库里静默少掉几篇。
+_INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _safe_filename(name: str) -> str:
+    """把标题/分类名变成跨平台可用的文件名（去非法字符、限制长度）。"""
+    return _INVALID_FILENAME_RE.sub("_", name).strip(" .")[:80]
+
+
 def _save_clean_text(article: ArticleMetadata) -> Path:
     """将清洗后的文本保存到 scraped_docs/{category}/{title}.txt"""
     # 安全文件名
-    safe_title = article.title.replace("/", "_").replace("\\", "_").replace(":", "：")
-    safe_title = safe_title[:80]  # 限制长度
-    safe_cat = article.category.replace("/", "_")
+    safe_title = _safe_filename(article.title)
+    safe_cat = _safe_filename(article.category)
 
     cat_dir = _SCRAPED_DOCS_DIR / safe_cat
     cat_dir.mkdir(parents=True, exist_ok=True)
@@ -107,6 +119,7 @@ def _split_and_embed(
                 "category": article.category,
                 "source_site": article.source_site,
                 "publish_date": article.publish_date,
+                "date_int": date_to_int(article.publish_date),  # 数值日期，供 Chroma 区间过滤
                 "year": year,                     # 标签二：发布年份
                 "url": article.url,
             })

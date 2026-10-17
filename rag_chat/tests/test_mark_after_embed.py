@@ -147,7 +147,7 @@ def test_scrape_category_does_not_mark(monkeypatch):
             {"total": 0, "current": 1, "total_pages": 1, "next_url": None},
         )
 
-    async def fake_scrape_article(url, category, source_site, session):
+    async def fake_scrape_article(url, category, source_site, session, fallback_date=""):
         return ArticleMetadata(
             title=url, publish_date="2026-10-01", category=category,
             source_site=source_site, url=url, clean_text="正文", content_hash="h",

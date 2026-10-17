@@ -1,17 +1,17 @@
 # RAG 智能知识库问答系统
 
 基于 **FastAPI + ChromaDB + DeepSeek** 的检索增强生成（RAG）问答后端。把河南工学院官网
-**1195 篇公开文档 / 13 个分类**全量爬进知识库，变成可自然语言提问的问答系统——
+**1594 篇公开文档 / 17 个分类**全量爬进知识库，变成可自然语言提问的问答系统——
 答案**附原文链接**，检索不到就**拒答**而不是编造。
 
-知识库**只由爬虫构建**：没有上传入口，1195 篇全部来自官网公开栏目，**每一块都能追溯到
+知识库**只由爬虫构建**：没有上传入口，1594 篇全部来自官网公开栏目，**每一块都能追溯到
 一个具体 URL**。系统因此可以说清自己知道什么、不知道什么——这正是它能放心拒答的前提。
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?style=flat&logo=fastapi&logoColor=white)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-115%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-170%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -97,7 +97,7 @@ HTML → 纯文本（动易 CMS / JSP 模板适配，按栏目配选择器）
    ▼
 paraphrase-multilingual-MiniLM-L12-v2 向量化
    ▼
-ChromaDB（collection: my_rag_collection，5919 块）
+ChromaDB（collection: my_rag_collection，7833 块）
 ```
 
 > **这条链路不只跑一次**：服务运行期间每天 `10:00` 自动增量重跑一遍（爬虫按 URL 去重，

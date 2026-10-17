@@ -58,7 +58,7 @@ async def _run(monkeypatch, pages: list[list[dict]], scraped: set[str], max_page
         return arts, {"total": 0, "current": idx + 1, "total_pages": len(pages),
                       "next_url": nxt}
 
-    async def fake_scrape_article(url, category, source_site, session):
+    async def fake_scrape_article(url, category, source_site, session, fallback_date=""):
         return ArticleMetadata(
             title=url, publish_date="2026-10-01", category=category,
             source_site=source_site, url=url, clean_text="正文", content_hash="h",

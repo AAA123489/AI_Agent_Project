@@ -66,8 +66,20 @@ class Bm25Retriever:
             self._bm25 = None
             return False
 
-    def search(self, query: str, top_n: int = 8, year: str | None = None) -> list[dict]:
-        """BM25 打分 → 年份过滤 → 截断 top_n。"""
+    def search(
+        self,
+        query: str,
+        top_n: int = 8,
+        year: str | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
+    ) -> list[dict]:
+        """BM25 打分 → 日期/年份过滤 → 截断 top_n。
+
+        date_start/date_end 是闭区间（YYYY-MM-DD），用于「昨天/最近/本周」这类
+        相对时间问题。**过滤必须在排序前**：BM25 的 prefetch 只有 30 条，
+        先取 30 再按日期筛，很容易被大量旧文档占满名额，日期窗口内一条不剩。
+        """
         if self._bm25 is None:
             return []
         import jieba
@@ -76,8 +88,15 @@ class Bm25Retriever:
         if not q_tokens:
             return []
         scores = self._bm25.get_scores(q_tokens)
-        # 全库按分排序，先取宽口径 prefetch，再做年份过滤
-        order = sorted(range(len(scores)), key=lambda i: -scores[i])[:_BM25_PREFETCH]
+
+        # 先按年份/日期筛出候选下标，再按 BM25 分排序
+        candidates = range(len(scores))
+        if date_start or date_end:
+            candidates = [
+                i for i in candidates
+                if self._in_date_range(self._metadatas[i], date_start, date_end)
+            ]
+        order = sorted(candidates, key=lambda i: -scores[i])[:_BM25_PREFETCH]
         best = scores[order[0]] if order else 1.0
         best = best if best > 0 else 1.0
         out = []
@@ -99,6 +118,18 @@ class Bm25Retriever:
             if len(out) >= top_n:
                 break
         return out
+
+    @staticmethod
+    def _in_date_range(meta: dict, start: str | None, end: str | None) -> bool:
+        """publish_date 是否落在闭区间；空日期一律排除（无法证明它属于该时段）。"""
+        d = (meta or {}).get("publish_date", "")
+        if not d:
+            return False
+        if start and d < start:
+            return False
+        if end and d > end:
+            return False
+        return True
 
 
 # 模块级单例缓存（懒加载）

@@ -32,6 +32,9 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.vector_store import VectorStore
 from src.hybrid_retriever import rrf_fuse, get_bm25_retriever
 from src.stream_gate import OpeningGate
+from src.time_range import (
+    TimeRange, date_to_int, resolve_time_range, strip_time_phrase,
+)
 
 load_dotenv()
 
@@ -157,6 +160,12 @@ SYSTEM_PROMPT = (
     "16. **重要**：**调用工具前不要输出任何文字说明**——不要写「I'll search the knowledge base…」"
     "「让我先查一下」「我将调用…」这类旁白，直接发起工具调用。工具返回后直接给最终答案，"
     "不要复述检索过程。全流程只用中文，任何情况下都不要输出英文（代码、专有名词、URL 除外）。\n"
+    "17. **相对时间**：用户问「今天/昨天/最近/本周/本月/今年」时，检索 query 要带上"
+    "**具体主题 + 具体日期**（如「通知 2026-10-16」「新闻 2026-10」），不要只传「昨天」；"
+    "不确定今天日期就先调用 get_current_time。回答时以检索片段里的「日期:」为准，"
+    "明确说出对应日期；该时段没有内容就如实说没有，不要拿别的日期顶替。\n"
+    "18. **知识库范围**：知识库包含学校新闻、通知公告、各学院新闻/通知等分类，"
+    "不要声称「知识库没有新闻资讯类内容」。是否有时段内的内容，以检索结果为准。\n"
     "\n"
     "## 隐私保护规则（重要）\n"
     "- 用户若询问**某位具体老师/员工的个人手机号、邮箱或私人住址**，一律不提供。\n"
@@ -475,6 +484,117 @@ def _rare_token_exact_recall(query: str, merged: list[dict], vs) -> list[dict]:
     return merged
 
 
+# ═══════════════════════════════════════════════════════
+# 相对时间：把「昨天/最近」落到日期区间
+# ═══════════════════════════════════════════════════════
+#
+# 只靠 prompt 让 LLM 自己换算不可靠：它可能不调 get_current_time、可能把
+# 「昨天」原样传给检索，而检索层原本完全不看 publish_date。这里在检索入口
+# 做确定性解析，LLM 传不传日期都能生效。
+
+# 判断「最近/昨天」类问题是不是在问「最新动态」，而不是某个具体主题。
+# 例如「最近的通知消息是什么」是泛问，应该按日期倒序直接列最新通知；
+# 「最近有没有转专业的通知」含主题词「转专业」，仍走语义检索 + 日期过滤。
+_RECENCY_FILLERS = (
+    "有没有", "有什么", "有哪些", "是什么", "什么", "哪些", "新的", "新",
+    "消息", "内容", "东西", "事情", "发生", "发布", "通知", "新闻", "公告",
+    "动态", "了吗", "吗", "呢", "的", "了", "是", "在", "我", "想", "知道",
+    "一下", "关于", "学校", "校园", "帮我", "请", "看看", "查查", "查一下",
+    "告诉我", "都有", "都",
+)
+_ORG_IN_QUERY_RE = re.compile(r"[一-龥A-Za-z]{2,20}(?:学院|大学|学校)")
+
+
+def _date_where(tr: TimeRange) -> dict:
+    """Chroma 元数据过滤：date_int 落在闭区间。
+
+    用 date_int 而不是 publish_date：Chroma 的 $gte/$lte 只支持数字，
+    传 "2026-10-16" 会直接报 ValueError（实测）。
+    """
+    return {"$and": [
+        {"date_int": {"$gte": date_to_int(tr.start)}},
+        {"date_int": {"$lte": date_to_int(tr.end)}},
+    ]}
+
+
+def _is_generic_recency_query(query: str, tr: TimeRange) -> bool:
+    """去掉时间词、机构名和泛问词后，若几乎不剩主题词 → 泛问「最新动态」。"""
+    rest = strip_time_phrase(query, tr)
+    rest = _ORG_IN_QUERY_RE.sub(" ", rest)
+    for word in _RECENCY_FILLERS:
+        rest = rest.replace(word, " ")
+    rest = re.sub(r"[\s，。！？、,.!?：:；;（）()【】\[\]]+", "", rest)
+    return len(rest) <= 2
+
+
+def _chunk_seq(doc_id: str) -> int:
+    """从块 id（..._0 / ..._1）取块序号，用于优先选文章首块。"""
+    try:
+        return int(str(doc_id).rsplit("_", 1)[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _recent_candidates(tr: TimeRange, query: str, top_k: int = TOP_K) -> list[dict]:
+    """按发布日期倒序列出区间内的文章（每篇取首块），供「最近有什么通知」使用。
+
+    这类问题没有主题词，语义检索只会按「通知」二字的相似度随便捞几篇旧文；
+    真正该做的是按日期排序。分类/机构能从句子里看出来（如「智能工程学院通知」），
+    这里顺手做过滤，避免把全校通知混进学院问题。
+    """
+    vs = _get_vector_store()
+    try:
+        # include 不能含 ids：这个 Chroma 版本里 ids 永远返回，传了反而报
+        # 「Expected include item to be one of documents, embeddings, ...」
+        data = vs.collection.get(
+            where=_date_where(tr),
+            include=["documents", "metadatas"],
+        )
+    except Exception as e:
+        logger.error("按日期取最近内容失败: %s", e)
+        return []
+
+    docs = data.get("documents") or []
+    metas = data.get("metadatas") or []
+    ids = data.get("ids") or []
+
+    if "通知" in query or "公告" in query:
+        suffix = "通知"
+    elif "新闻" in query or "动态" in query:
+        suffix = "新闻"
+    else:
+        suffix = ""
+    orgs = [o for o in _get_internal_org_names() if o and o in query]
+
+    grouped: dict[str, tuple[int, str, dict]] = {}  # source -> (块序号, 文本, 元数据)
+    for doc, meta, doc_id in zip(docs, metas, ids):
+        meta = meta or {}
+        if not doc or not tr.contains(meta.get("publish_date", "")):
+            continue
+        cat = meta.get("category", "")
+        # 用 in 而不是 endswith：「通知公告」这个分类不以「通知」结尾，
+        # 但用户问「最近的通知」显然应该包含它。
+        if suffix and suffix not in cat:
+            continue
+        if orgs and not any(org in cat for org in orgs):
+            continue
+        src = meta.get("source") or doc_id
+        seq = _chunk_seq(doc_id)
+        cur = grouped.get(src)
+        if cur is None or seq < cur[0]:
+            grouped[src] = (seq, doc, meta)
+
+    ordered = sorted(
+        grouped.values(),
+        key=lambda item: (item[2].get("publish_date", ""), item[2].get("source", "")),
+        reverse=True,
+    )
+    return [
+        {"text": doc, "metadata": meta, "distance": 0.0}
+        for _, doc, meta in ordered[:top_k]
+    ]
+
+
 def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
     """混合检索前半段：库外校验 → 年份过滤 → 向量+BM25 融合召回 → 去重 → 补块。
 
@@ -503,20 +623,45 @@ def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
     vs = _get_vector_store()
     t_vec = t_bm25 = t_mix = t_rr = t_ctx = None  # 各检索阶段时间戳（埋点；None = 该阶段未执行）
 
-    # 1. 年份过滤（检索时过滤，不是返回后再滤）
+    # 0. 相对时间解析：「昨天/最近/本周」→ 具体日期区间。
+    #    泛问「最近有什么通知」没有主题词，语义检索只会按「通知」捞旧文，
+    #    直接按日期倒序列出该时段文章才是用户要的。
+    time_range = resolve_time_range(query)
+    search_query = query
+    if time_range:
+        search_query = strip_time_phrase(query, time_range) or query
+        logger.info(
+            "相对时间解析: %r → %s ~ %s（%s），检索词 %r",
+            query, time_range.start, time_range.end, time_range.label, search_query,
+        )
+        if _is_generic_recency_query(query, time_range):
+            candidates = _recent_candidates(time_range, query, top_k)
+            if candidates:
+                logger.info("泛问「最新动态」：按日期倒序返回 %d 篇", len(candidates))
+                return {"candidates": candidates, "short_circuit": None, "timings": {}}
+            return {
+                "candidates": [],
+                "short_circuit": f"知识库中{time_range.label}没有相关内容。",
+                "timings": {},
+            }
+
+    # 1. 年份/日期过滤（检索时过滤，不是返回后再滤）
+    # 有相对时间时用 publish_date 精确区间；否则沿用「query 提到某年」的 ±1 年窗口。
     # 放宽为 ±1 年窗口：query 里的年份常是「内容年份」（2026年挑战杯/2024年度评选），
     # 而文档 year 元数据是「发布年份」，两者常差一年（如 2025-12 发布 2026 挑战杯通知、
     # 2025-01 发布 2024 年度评选公示）。精确单年会把这些目标文档滤掉（eval Q11/Q23 败因）。
     # 空年份（发布页无日期）仍放行；窗口外（≥2 年前）的旧通知仍排除，保持"清跨年旧通知"效果。
     where = None
-    year = _extract_year(query)
-    if year:
+    year = None if time_range else _extract_year(query)
+    if time_range:
+        where = _date_where(time_range)
+    elif year:
         y = int(year)
         where = {"year": {"$in": [str(y - 1), year, str(y + 1), ""]}}
 
     # 2. 召回：纯向量 / 混合（向量 + BM25 两路 RRF 融合）
     try:
-        vector_results = vs.search_similar(query, n_results=top_k, where=where)
+        vector_results = vs.search_similar(search_query, n_results=top_k, where=where)
         t_vec = time.perf_counter()
     except Exception as e:
         logger.error("检索失败: %s", e)
@@ -527,7 +672,11 @@ def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
         bm25 = get_bm25_retriever(vs.collection)
         if bm25 is not None:
             try:
-                bm25_results = bm25.search(query, top_n=top_k, year=year)
+                bm25_results = bm25.search(
+                    search_query, top_n=top_k, year=year,
+                    date_start=time_range.start if time_range else None,
+                    date_end=time_range.end if time_range else None,
+                )
                 t_bm25 = time.perf_counter()
                 results = rrf_fuse(vector_results, bm25_results, top_n=top_k)
                 t_mix = time.perf_counter()
@@ -536,23 +685,31 @@ def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
                 results = vector_results
 
     # 2b. 年份过滤兜底：带年份过滤召回到空 → 说明目标文档没打年份元数据
-    # （发布页无日期），放宽到不过滤重试一次，避免把内容相关的旧文档滤丢
+    # （发布页无日期），放宽到不过滤重试一次，避免把内容相关的旧文档滤丢。
+    # 相对时间是硬条件（问的就是那个时段），不做这个回退——否则「昨天」没内容时
+    # 会把旧文档捞回来，LLM 又可能拿旧内容冒充昨天。
     if year and not results:
         logger.info("年份过滤(%s)无结果，回退不过滤重试", year)
         try:
-            vector_results = vs.search_similar(query, n_results=top_k)
+            vector_results = vs.search_similar(search_query, n_results=top_k)
             t_vec = time.perf_counter()
             results = vector_results
             if RETRIEVAL_MODE == "hybrid":
                 bm25 = get_bm25_retriever(vs.collection)
                 if bm25 is not None:
-                    bm25_results = bm25.search(query, top_n=top_k, year=None)
+                    bm25_results = bm25.search(search_query, top_n=top_k, year=None)
                     t_bm25 = time.perf_counter()
                     results = rrf_fuse(vector_results, bm25_results, top_n=top_k)
                     t_mix = time.perf_counter()
         except Exception as e:
             logger.error("年份回退检索失败: %s", e)
     if not results:
+        if time_range:
+            return {
+                "candidates": [],
+                "short_circuit": f"知识库中{time_range.label}没有找到相关内容。",
+                "timings": {},
+            }
         return {"candidates": [], "short_circuit": "知识库中未找到相关内容。", "timings": {}}
 
     # 3. 按文本内容去重（同一通知被爬进两个分类目录 + 重叠窗口会产生内容相同的块）
@@ -567,7 +724,7 @@ def _retrieve_candidates(query: str, top_k: int = TOP_K) -> dict:
 
     # 3b. 罕见词精确召回兜底：向量+BM25 都漏掉的人名/专有名词，$contains 原文精确匹配强制召回。
     #     放在补块之前，让补块能一并带出该来源的上下文块（如获奖名单所在文章的正文）。
-    merged = _rare_token_exact_recall(query, merged, vs)
+    merged = _rare_token_exact_recall(search_query, merged, vs)
 
     # 4. 同文档补块：对初始命中的每个来源，按 source 元数据拉取该文档全部块，
     #    追加未召回的后续块（关键句常埋在文档中后段，如 排查通知的 3月3-15日 和 台账 分别落在第二、三块）。
@@ -893,6 +1050,19 @@ def _parse_sources(result_text: str) -> list[dict]:
 # LLM 调用（Anthropic-compatible，支持 Tool Use）
 # ═══════════════════════════════════════════════════════
 
+def _system_with_date(system: str | None) -> str:
+    """主循环的 system prompt 追加当前日期；判官等显式传 system 的调用不改。
+
+    相对时间（昨天/最近）要靠模型自己算，prompt 里没有「今天」时它只能先调
+    get_current_time，多一次往返；更糟的是它可能直接说「我无法知道今天」。
+    """
+    if system is not None:
+        return system
+    now = datetime.now()
+    weekday = "一二三四五六日"[now.weekday()]
+    return f"{SYSTEM_PROMPT}\n\n当前日期：{now:%Y-%m-%d}（星期{weekday}），当前时间：{now:%H:%M}"
+
+
 async def _call_llm(
     messages: list[dict],
     api_key: str,
@@ -934,7 +1104,7 @@ async def _call_llm(
             "model": MODEL_NAME,
             "max_tokens": max_tokens if max_tokens is not None else MAX_TOKENS,
             "temperature": temperature if temperature is not None else TEMPERATURE,
-            "system": system if system is not None else SYSTEM_PROMPT,
+            "system": _system_with_date(system),
             "messages": messages,
             # 禁用思考模式：deepseek 默认返回 thinking 块，工具调用后回传 assistant
             # 必须原样带 thinking+signature，否则报 400。RAG 查询场景无需思考链，直接禁用
