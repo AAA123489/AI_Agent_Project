@@ -61,7 +61,7 @@
   .btn-ghost { background: var(--border); color: var(--text); }
 
   /* ════ 主区域 ════ */
-  .admin-main { max-width: 860px; margin: 0 auto; padding: 20px 24px 40px; }
+  .admin-main { max-width: 1080px; margin: 0 auto; padding: 20px 24px 40px; }
   .card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 12px; padding: 20px; margin-bottom: 16px;
@@ -103,6 +103,62 @@
   .scrape-result { margin-top: 12px; font-size: 13px; }
   .scrape-result .stat-line { margin-bottom: 4px; }
   .scrape-result .err-list { font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+
+  /* ════ 问答审计 ════ */
+  .audit-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+  .audit-filters label {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 11px; color: var(--text-dim);
+  }
+  .audit-filters input, .audit-filters select {
+    padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px; outline: none;
+  }
+  .audit-filters input[type="number"] { width: 100px; }
+  .audit-filters input[type="date"] { width: 150px; color-scheme: dark; }
+  .audit-filters input:focus, .audit-filters select:focus { border-color: var(--accent); }
+  .audit-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .audit-summary {
+    font-size: 12px; color: var(--text-dim); margin: 14px 0 8px;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .audit-list { display: flex; flex-direction: column; gap: 6px; }
+  .audit-row { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .audit-row[open] { border-color: #3d4450; }
+  .audit-row > summary {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+    cursor: pointer; font-size: 12px; list-style: none; user-select: none;
+  }
+  .audit-row > summary::-webkit-details-marker { display: none; }
+  .audit-row > summary:hover { background: var(--hover); }
+  .audit-time { color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .audit-user { color: #79c0ff; white-space: nowrap; }
+  .audit-q { flex: 1; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .audit-badge { font-size: 10px; padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
+  .audit-badge.done { background: #0d3321; color: var(--success); }
+  .audit-badge.error { background: #3d0000; color: var(--accent); }
+  .audit-badge.aborted { background: #332b00; color: var(--warn); }
+  .audit-meta-small { color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .audit-detail { padding: 4px 14px 14px; border-top: 1px solid var(--border); font-size: 13px; line-height: 1.7; }
+  .audit-detail h4 { font-size: 12px; color: var(--text-dim); margin: 12px 0 4px; font-weight: 600; }
+  .audit-detail pre {
+    background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    max-height: 360px; overflow: auto;
+  }
+  .audit-detail ol { padding-left: 20px; }
+  .audit-detail ol li { margin: 2px 0; }
+  .audit-detail a { color: #79c0ff; }
+  .audit-tool { background: var(--sidebar-bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+  .audit-tool-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+  .audit-tool-head b { color: var(--text); }
+  .audit-tool-stats { color: var(--text-dim); margin-left: auto; font-variant-numeric: tabular-nums; }
+  .audit-tool pre { margin-top: 6px; max-height: 220px; }
+  .audit-empty { text-align: center; color: var(--text-dim); font-size: 13px; padding: 24px 0; }
+  .pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; font-size: 12px; color: var(--text-dim); }
+  .pager button { padding: 6px 14px; font-size: 12px; }
 
   /* ════ 确认弹窗（复用 chat.html 样式） ════ */
   .modal-overlay {
@@ -194,6 +250,48 @@
     <div class="banner banner-info" id="scrapeStatus" hidden>⏳ 运行中…（每页约 3~8 分钟，请耐心等待，此窗口勿关闭）</div>
     <div class="scrape-result" id="scrapeResult" hidden></div>
   </section>
+
+  <!-- 区块3：问答审计（需解锁） -->
+  <section class="card" id="auditSection">
+    <div class="section-header">
+      <h2>问答审计</h2>
+      <span class="locked-hint" id="auditLockedHint" hidden>⚠ 请先在上方解锁</span>
+    </div>
+    <div class="audit-filters">
+      <label>用户 ID
+        <input type="number" id="auditUserId" min="1" placeholder="全部">
+      </label>
+      <label>开始日期
+        <input type="date" id="auditFrom">
+      </label>
+      <label>结束日期
+        <input type="date" id="auditTo">
+      </label>
+      <label>状态
+        <select id="auditStatus">
+          <option value="">全部</option>
+          <option value="done">done</option>
+          <option value="error">error</option>
+          <option value="aborted">aborted</option>
+        </select>
+      </label>
+      <div class="audit-actions">
+        <button class="btn-accent" id="auditQueryBtn">查询</button>
+        <button class="btn-ghost" id="auditExportCsvBtn">导出 CSV</button>
+        <button class="btn-ghost" id="auditExportJsonlBtn">导出 JSONL</button>
+      </div>
+    </div>
+    <div class="banner banner-error" id="auditError" hidden></div>
+    <div class="audit-summary" id="auditSummary" hidden>
+      <span id="auditSummaryText"></span>
+    </div>
+    <div class="audit-list" id="auditList"></div>
+    <div class="pager" id="auditPager" hidden>
+      <button class="btn-ghost" id="auditPrevBtn">上一页</button>
+      <span id="auditPageInfo"></span>
+      <button class="btn-ghost" id="auditNextBtn">下一页</button>
+    </div>
+  </section>
 </main>
 
 <!-- 爬虫确认弹窗 -->
@@ -252,11 +350,14 @@ function handleUnlock() {
   setUnlockedState(true);
   $('unlockInput').value = '';
   showToast('已解锁', 'ok');
+  auditOffset = 0;
+  fetchAudit();
 }
 
 function handleReenter() {
   currentKey = '';
   setUnlockedState(false);
+  clearAuditView();
   $('unlockInput').focus();
 }
 
@@ -264,6 +365,7 @@ function handleForget() {
   currentKey = '';
   localStorage.removeItem(KEY_STORAGE);
   setUnlockedState(false);
+  clearAuditView();
 }
 
 function flashUnlock() {
@@ -276,15 +378,19 @@ function flashUnlock() {
 function requireUnlocked() {
   if (currentKey) return true;
   flashUnlock();
-  const hint = $('scrapeLockedHint');
-  hint.hidden = false;
-  setTimeout(() => { hint.hidden = true; }, 2500);
+  ['scrapeLockedHint', 'auditLockedHint'].forEach(id => {
+    const hint = $(id);
+    if (!hint) return;
+    hint.hidden = false;
+    setTimeout(() => { hint.hidden = true; }, 2500);
+  });
   return false;
 }
 
 function handleApi401() {
   currentKey = '';
   setUnlockedState(false);
+  clearAuditView();
   showToast('API Key 无效，请重新解锁', 'err');
 }
 
@@ -434,6 +540,271 @@ async function startScrape() {
 }
 
 // ═══════════════════════════════════════
+// 问答审计
+// ═══════════════════════════════════════
+const AUDIT_PAGE_SIZE = 20;
+let auditOffset = 0;
+let auditTotal = 0;
+let auditBusy = false;
+
+function mk(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function clearAuditView() {
+  auditOffset = 0;
+  auditTotal = 0;
+  $('auditList').textContent = '';
+  $('auditSummary').hidden = true;
+  $('auditPager').hidden = true;
+  $('auditError').hidden = true;
+}
+
+function showAuditError(msg) {
+  const banner = $('auditError');
+  banner.textContent = '⚠ ' + msg;
+  banner.hidden = false;
+}
+
+function auditFilterParams() {
+  const params = new URLSearchParams();
+  const userId = $('auditUserId').value.trim();
+  if (userId) params.set('user_id', userId);
+  if ($('auditFrom').value) params.set('date_from', $('auditFrom').value);
+  if ($('auditTo').value) params.set('date_to', $('auditTo').value);
+  if ($('auditStatus').value) params.set('status', $('auditStatus').value);
+  return params;
+}
+
+async function fetchAudit() {
+  if (auditBusy) return;
+  if (!requireUnlocked()) return;
+
+  auditBusy = true;
+  const btn = $('auditQueryBtn');
+  btn.disabled = true;
+  btn.textContent = '查询中…';
+  $('auditError').hidden = true;
+
+  const params = auditFilterParams();
+  params.set('limit', AUDIT_PAGE_SIZE);
+  params.set('offset', auditOffset);
+
+  try {
+    const res = await fetch(API_BASE + '/admin/audit?' + params.toString(), {
+      headers: { 'X-API-Key': currentKey },
+    });
+    if (res.status === 401) {
+      handleApi401();
+      return;
+    }
+    let body = {};
+    try { body = await res.json(); } catch (e) {}
+    if (!res.ok) {
+      const detail = typeof body.detail === 'string'
+        ? body.detail
+        : '参数不合法，请检查筛选条件';
+      showAuditError(detail || ('加载失败 (' + res.status + ')'));
+      return;
+    }
+    renderAudit(body);
+  } catch (err) {
+    showAuditError('无法连接服务，请确认 app_fastapi.py 已启动');
+  } finally {
+    auditBusy = false;
+    btn.disabled = false;
+    btn.textContent = '查询';
+  }
+}
+
+function renderAudit(data) {
+  const items = data.items || [];
+  auditTotal = Number(data.total) || 0;
+
+  const list = $('auditList');
+  list.textContent = '';
+
+  if (!items.length) {
+    const empty = mk('div', 'audit-empty',
+      auditOffset > 0 ? '这一页没有记录' : '暂无符合条件的问答记录');
+    list.appendChild(empty);
+  } else {
+    items.forEach(item => list.appendChild(renderAuditRow(item)));
+  }
+
+  const start = auditTotal ? auditOffset + 1 : 0;
+  const end = auditOffset + items.length;
+  $('auditSummary').hidden = false;
+  $('auditSummaryText').textContent = `共 ${auditTotal} 条 · 当前显示第 ${start}–${end} 条`;
+
+  const pages = Math.max(1, Math.ceil(auditTotal / AUDIT_PAGE_SIZE));
+  $('auditPager').hidden = auditTotal <= AUDIT_PAGE_SIZE;
+  $('auditPageInfo').textContent = `第 ${Math.floor(auditOffset / AUDIT_PAGE_SIZE) + 1} / ${pages} 页`;
+  $('auditPrevBtn').disabled = auditOffset <= 0;
+  $('auditNextBtn').disabled = end >= auditTotal;
+}
+
+function renderAuditRow(item) {
+  const row = document.createElement('details');
+  row.className = 'audit-row';
+
+  const summary = document.createElement('summary');
+
+  const status = item.status || 'aborted';
+  const time = (item.created_at || '').replace('T', ' ').slice(0, 19);
+
+  summary.appendChild(mk('span', 'audit-time', time || '–'));
+  summary.appendChild(mk('span', 'audit-user', `${item.username || '?'} #${item.user_id}`));
+  summary.appendChild(mk('span', 'audit-q', item.question || '（空问题）'));
+  summary.appendChild(mk('span', 'audit-badge ' + status, status));
+  summary.appendChild(mk('span', 'audit-meta-small', (item.latency_ms ?? 0) + ' ms'));
+  summary.appendChild(mk('span', 'audit-meta-small', item.mode || 'live'));
+  row.appendChild(summary);
+
+  const detail = mk('div', 'audit-detail');
+
+  detail.appendChild(mk('h4', null, '问题'));
+  detail.appendChild(mk('pre', null, item.question || '（空）'));
+
+  detail.appendChild(mk('h4', null, '答案'));
+  detail.appendChild(mk('pre', null, item.answer || '（空）'));
+
+  const thinking = Array.isArray(item.thinking) ? item.thinking : [];
+  if (thinking.length) {
+    detail.appendChild(mk('h4', null, `思考过程（${thinking.length} 步）`));
+    const ol = document.createElement('ol');
+    thinking.forEach(step => ol.appendChild(mk('li', null, step)));
+    detail.appendChild(ol);
+  }
+
+  const calls = Array.isArray(item.tool_calls) ? item.tool_calls : [];
+  if (calls.length) {
+    detail.appendChild(mk('h4', null, `工具调用（${calls.length} 次）`));
+    calls.forEach(call => detail.appendChild(renderToolCall(call)));
+  }
+
+  const sources = Array.isArray(item.sources) ? item.sources : [];
+  if (sources.length) {
+    detail.appendChild(mk('h4', null, `来源（${sources.length}）`));
+    const ol = document.createElement('ol');
+    sources.forEach(src => {
+      const li = document.createElement('li');
+      const label = src.title || src.source || src.url || JSON.stringify(src);
+      if (src.url) {
+        const a = mk('a', null, label);
+        a.href = src.url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        li.appendChild(a);
+      } else {
+        li.textContent = label;
+      }
+      if (src.similarity !== undefined && src.similarity !== null) {
+        li.append(`（相似度 ${Number(src.similarity).toFixed(3)}）`);
+      }
+      ol.appendChild(li);
+    });
+    detail.appendChild(ol);
+  }
+
+  if (item.error) {
+    detail.appendChild(mk('h4', null, '错误'));
+    detail.appendChild(mk('pre', null, item.error));
+  }
+
+  detail.appendChild(mk('h4', null, '元信息'));
+  detail.appendChild(mk('pre', null, [
+    `request_id: ${item.request_id || '–'}`,
+    `conversation_id: ${item.conversation_id || '–'}`,
+    `model: ${item.model || '–'}`,
+    `mode: ${item.mode || '–'} / status: ${status}`,
+    `latency: ${item.latency_ms ?? 0} ms`,
+    `created_at: ${item.created_at || '–'}`,
+  ].join('\n')));
+
+  row.appendChild(detail);
+  return row;
+}
+
+function renderToolCall(call) {
+  const box = mk('div', 'audit-tool');
+  const head = mk('div', 'audit-tool-head');
+
+  head.appendChild(mk('b', null, call.tool || '未知工具'));
+  head.appendChild(mk('span', 'audit-badge ' + (call.success ? 'done' : 'error'),
+    call.success ? '✓ 成功' : '✗ 失败'));
+  if (call.truncated) head.appendChild(mk('span', 'audit-badge aborted', '已截断'));
+  head.appendChild(mk('span', 'audit-tool-stats', (call.duration_ms ?? 0) + ' ms'));
+  box.appendChild(head);
+
+  if (call.args) {
+    box.appendChild(mk('h4', null, '参数'));
+    box.appendChild(mk('pre', null, prettyJson(call.args)));
+  }
+  if (call.output) {
+    box.appendChild(mk('h4', null, '结果'));
+    box.appendChild(mk('pre', null, call.output));
+  }
+  return box;
+}
+
+function prettyJson(value) {
+  if (typeof value !== 'string') return JSON.stringify(value, null, 2);
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch (e) {
+    return value;
+  }
+}
+
+async function exportAudit(fmt) {
+  if (!requireUnlocked()) return;
+
+  const params = auditFilterParams();
+  params.set('fmt', fmt);
+
+  try {
+    const res = await fetch(API_BASE + '/admin/audit/export?' + params.toString(), {
+      headers: { 'X-API-Key': currentKey },
+    });
+    if (res.status === 401) {
+      handleApi401();
+      return;
+    }
+    if (!res.ok) {
+      let detail = `导出失败 (${res.status})`;
+      try {
+        const body = await res.json();
+        if (typeof body.detail === 'string') detail = body.detail;
+      } catch (e) {}
+      showAuditError(detail);
+      return;
+    }
+
+    const blob = await res.blob();
+    let filename = `qa_audit.${fmt}`;
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const matched = disposition.match(/filename="?([^";]+)"?/);
+    if (matched) filename = matched[1];
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('已导出 ' + fmt.toUpperCase(), 'ok');
+  } catch (err) {
+    showAuditError('导出失败：无法连接服务');
+  }
+}
+
+// ═══════════════════════════════════════
 // 事件绑定
 // ═══════════════════════════════════════
 $('unlockBtn').addEventListener('click', handleUnlock);
@@ -446,9 +817,30 @@ $('scrapeCancelBtn').addEventListener('click', closeScrapeConfirm);
 $('scrapeConfirmBtn').addEventListener('click', startScrape);
 $('scrapeConfirmModal').addEventListener('click', e => { if (e.target === $('scrapeConfirmModal')) closeScrapeConfirm(); });
 
+$('auditQueryBtn').addEventListener('click', () => { auditOffset = 0; fetchAudit(); });
+$('auditPrevBtn').addEventListener('click', () => {
+  if (auditOffset <= 0) return;
+  auditOffset = Math.max(0, auditOffset - AUDIT_PAGE_SIZE);
+  fetchAudit();
+});
+$('auditNextBtn').addEventListener('click', () => {
+  if (auditOffset + AUDIT_PAGE_SIZE >= auditTotal) return;
+  auditOffset += AUDIT_PAGE_SIZE;
+  fetchAudit();
+});
+['auditUserId', 'auditFrom', 'auditTo', 'auditStatus'].forEach(id => {
+  $(id).addEventListener('change', () => { auditOffset = 0; });
+});
+$('auditUserId').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { auditOffset = 0; fetchAudit(); }
+});
+$('auditExportCsvBtn').addEventListener('click', () => exportAudit('csv'));
+$('auditExportJsonlBtn').addEventListener('click', () => exportAudit('jsonl'));
+
 // 启动
 loadSavedKey();
 fetchKbStats();
+if (currentKey) fetchAudit();
 </script>
 </body>
 </html>

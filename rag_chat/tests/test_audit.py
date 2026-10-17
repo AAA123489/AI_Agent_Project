@@ -174,6 +174,54 @@ def test_查询过滤(app_env):
     assert query_audit()[0] == 2
 
 
+def test_清理超过保留期的审计(app_env):
+    from datetime import datetime, timedelta
+
+    from audit import insert_qa_audit, purge_old_audit
+
+    now = datetime(2026, 10, 17, 12, 0, 0)
+    for offset_days, question in [(120, "旧问题"), (10, "新问题")]:
+        trace = make_trace(question=question)
+        trace.on_text("答案")
+        trace.on_done([], [])
+        row = trace.to_row()
+        row["created_at"] = (now - timedelta(days=offset_days)).isoformat(timespec="seconds")
+        insert_qa_audit(row)
+
+    assert query_audit()[0] == 2
+    assert purge_old_audit(90, now=now) == 1
+
+    total, items = query_audit()
+    assert total == 1
+    assert items[0]["question"] == "新问题"
+
+
+def test_保留天数0表示永久(app_env):
+    from audit import purge_old_audit
+
+    trace = make_trace()
+    trace.on_text("答案")
+    trace.on_done([], [])
+    record_qa_trace(trace)
+
+    assert purge_old_audit(0) == 0
+    assert purge_old_audit(-1) == 0
+    assert query_audit()[0] == 1
+
+
+def test_保留天数读取环境变量(app_env, monkeypatch):
+    from audit import audit_retention_days
+
+    monkeypatch.setenv("AUDIT_RETENTION_DAYS", "30")
+    assert audit_retention_days() == 30
+
+    monkeypatch.setenv("AUDIT_RETENTION_DAYS", "0")
+    assert audit_retention_days() == 0
+
+    monkeypatch.setenv("AUDIT_RETENTION_DAYS", "not-a-number")
+    assert audit_retention_days() == 90
+
+
 @pytest.mark.parametrize("limit", [0, -5, 999])
 def test_查询limit被限制在合法范围(app_env, limit):
     trace = make_trace()

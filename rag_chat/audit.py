@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Iterator
 
 from db import connect_db
@@ -221,6 +221,39 @@ def record_qa_trace(trace: QATrace | None) -> None:
         insert_qa_audit(trace.to_row())
     except Exception:
         logger.exception("写入问答审计失败（不影响对话）")
+
+
+# ── 保留期限 ──
+
+def audit_retention_days() -> int:
+    """审计保留天数。0 = 永久保留；非法值回落到 90。"""
+    try:
+        return max(0, int(os.getenv("AUDIT_RETENTION_DAYS", "90")))
+    except ValueError:
+        return 90
+
+
+def purge_old_audit(days: int, now: datetime | None = None) -> int:
+    """删除早于 days 天的审计行，返回删除条数。days <= 0 表示不清理。"""
+    if days <= 0:
+        return 0
+
+    cutoff = (now or datetime.now()) - timedelta(days=days)
+    cutoff_str = cutoff.isoformat(timespec="seconds")
+
+    conn = connect_db()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM qa_audit WHERE created_at < ?", (cutoff_str,)
+        )
+        conn.commit()
+        removed = int(cursor.rowcount or 0)
+        if removed:
+            # 更新查询计划统计；真正的空间回收需要 VACUUM，日常不做
+            conn.execute("PRAGMA optimize")
+        return removed
+    finally:
+        conn.close()
 
 
 # ── 查询 / 导出 ──

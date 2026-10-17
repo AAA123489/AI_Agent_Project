@@ -44,7 +44,10 @@ from app_backend import (
     TextEvent, DoneEvent, ErrorEvent,
 )
 from auth import auth_router, optional_user, require_user, daily_quota_limit
-from audit import QATrace, record_qa_trace, query_audit, export_audit_rows
+from audit import (
+    QATrace, record_qa_trace, query_audit, export_audit_rows,
+    audit_retention_days, purge_old_audit,
+)
 from db import init_db, try_consume_daily_quota
 # Redis（可选，用于服务端对话历史持久化）
 try:
@@ -95,6 +98,14 @@ async def lifespan(_: FastAPI):
     except Exception:
         logger.warning("embedding 预热失败，首问可能仍较慢", exc_info=True)
 
+    # ── 问答审计保留期限：启动先清一次，之后每 24 小时一次 ──
+    retention = audit_retention_days()
+    if retention > 0:
+        logger.info("🧹 问答审计保留 %d 天，超期自动清理", retention)
+    else:
+        logger.info("🧹 问答审计永久保留（AUDIT_RETENTION_DAYS=0）")
+    retention_task = asyncio.create_task(_audit_retention_loop())
+
     # ── 自动更新知识库：放下面的循环里，随应用启停 ──
     scheduler: "asyncio.Task | None" = None
     if SCRAPE_SCHEDULE_ENABLED:
@@ -111,10 +122,11 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        if scheduler:
-            scheduler.cancel()
-            with suppress(asyncio.CancelledError):
-                await scheduler
+        for task in (scheduler, retention_task):
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 app = FastAPI(title="校园百事通 API", version="2.0", lifespan=lifespan)
@@ -704,6 +716,24 @@ async def _scheduled_scraper_loop() -> None:
             logger.info("⏰ 定时自动更新知识库已启动")
         else:
             logger.info("⏰ 到点时爬虫仍在运行，本次跳过")
+
+
+async def _audit_retention_loop() -> None:
+    """问答审计保留期限：启动先清一次，之后每 24 小时一次。
+
+    删除动作走 to_thread，避免同步 SQLite 阻塞事件循环；
+    清理失败只记日志，绝不影响对话与爬虫。
+    """
+    while True:
+        try:
+            days = audit_retention_days()
+            if days > 0:
+                removed = await asyncio.to_thread(purge_old_audit, days)
+                if removed:
+                    logger.info("🧹 问答审计清理：删除 %d 条超过 %d 天的记录", removed, days)
+        except Exception:
+            logger.exception("问答审计清理失败（不影响服务）")
+        await asyncio.sleep(86400)
 
 
 @app.get("/scrape/status")

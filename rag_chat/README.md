@@ -71,7 +71,7 @@ rag_chat/
 │   ├── js/                 # 前端 ES Modules（api/store/render/sidebar/chat/main/login）
 │   ├── css/tailwind.css    # Tailwind 构建产物（需提交）
 │   ├── vendor/             # marked / lucide 本地托管（需提交）
-│   └── admin.html          # 爬虫管理面板
+│   └── admin.html          # 管理面板（库统计 / 爬虫 / 问答审计）
 ├── assets/tailwind.input.css  # Tailwind 源文件
 ├── scripts/copy-vendor.mjs    # 复制 marked / lucide UMD 到 static/vendor
 ├── tests/                  # pytest 测试
@@ -103,6 +103,7 @@ REDIS_URL=redis://localhost:6379
 SECRET_KEY=用 python -c "import secrets; print(secrets.token_urlsafe(48))" 生成
 DAILY_MESSAGE_QUOTA=50     # 每账号每日提问上限，0 = 不限
 REGISTER_INVITE_CODE=      # 留空 = 任何人可注册
+AUDIT_RETENTION_DAYS=90    # 问答审计保留天数，超期自动清理；0 = 永久保留
 ```
 
 > `.env` 已被 `.gitignore` 排除，不会提交。`data/rag_app.db` 含账号与问答原文，同样已被忽略。
@@ -178,6 +179,8 @@ python app_fastapi.py
 - 用户表与问答审计同存 `data/rag_app.db`（SQLite），按 `user_id` 逻辑隔离。
 - 每次问答落库：问题、答案、思考步骤、工具调用（参数 / 结果 / 耗时）、来源、错误、`request_id`、`conversation_id`、耗时。
 - 审计接口需管理员 `X-API-Key`，普通用户 Cookie 无法访问；落库失败只记日志，不影响对话。
+- **保留期限**：`AUDIT_RETENTION_DAYS` 默认 90 天（`0` = 永久）。服务启动时清一次，之后每 24 小时清一次；只删行，不自动 `VACUUM`。
+- **管理页**：`/admin.html` 解锁后可查审计——按用户 / 日期 / 状态筛选、点行展开完整问答 / 思考 / 工具调用 / 来源、翻页、导出 CSV / JSONL。
 
 ### 首句净化（为什么回答开头不再是英文）
 
@@ -335,7 +338,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 101 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端，均零网络；test_vector_store.py 读临时 Chroma）
+python -m pytest tests/ -v      # 149 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
 ```
 
 ## 许可证

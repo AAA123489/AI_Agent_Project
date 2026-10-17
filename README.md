@@ -201,6 +201,7 @@ cp .env.example .env
 | `DAILY_MESSAGE_QUOTA` | `50` | 每账号每日提问上限，`0` = 不限 |
 | `REGISTER_INVITE_CODE` | 空 | 填写后注册必须持码，用于控量 |
 | `APP_DB_PATH` | `data/rag_app.db` | 账号 / 额度 / 审计数据库路径 |
+| `AUDIT_RETENTION_DAYS` | `90` | 问答审计保留天数，超期自动清理；`0` = 永久保留 |
 
 ### 3. 构建知识库（三选一）
 
@@ -225,7 +226,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 146 条，零网络
+python -m pytest tests/ -v      # 149 条，零网络
 ```
 
 ---
@@ -664,7 +665,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 146 条，零网络
+python -m pytest tests/ -v      # 149 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
@@ -680,8 +681,10 @@ python -m pytest tests/ -v      # 146 条，零网络
 | `test_html_parser_form_content.py` | 5 | 正文被包在 `<form>` 里时不许整篇丢（含「短控件表单仍要删」的反向用例） |
 | `test_mark_after_embed.py` | 4 | 「标记 ⇒ 已入库」不变量：标记必须**晚于**入库、入库失败不许标记 |
 | `test_q6_rewrite_integration.py` | 4 | **假 LLM 端到端**复现「LLM 改写掉校名」这条路径 |
+| `test_auth.py` | 20 | 注册 / 登录 / 会话签名与过期 / 额度原子扣减 |
+| `test_audit.py` | 14 | 问答审计落库、幂等、截断、工具配对、导出、保留期清理 |
 
-> 合计 = `pytest --collect-only` 的 115。**表要逐文件列全，不能拿"其余 N 条"一裹**——
+> 合计 = `pytest --collect-only` 的 149。**表要逐文件列全，不能拿"其余 N 条"一裹**——
 > 曾经这么裹过一次，漏掉的正好是一整个文件（29 条），表里的和顺口写的数字差了 29，
 > 而没人看得出差在哪。逐文件列全，加不起来就会当场暴露。
 
@@ -861,8 +864,8 @@ rag_chat/
 ├── static/
 │   ├── js/                 # api / store / render / sidebar / chat / main / login
 │   ├── vendor/             # marked + lucide（本地托管，不依赖 CDN）
-│   └── admin.html          # 管理面板（爬虫 / 库统计）
-├── tests/                  # pytest 115 条
+│   └── admin.html          # 管理面板（库统计 / 爬虫 / 问答审计）
+├── tests/                  # pytest 149 条
 ├── docs/                   # 改进记录（累计变更日志，论文写作素材）
 ├── requirements.txt
 └── .env.example
