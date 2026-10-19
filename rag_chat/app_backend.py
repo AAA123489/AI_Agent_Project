@@ -275,18 +275,43 @@ def _get_vector_store() -> VectorStore:
 # 工具实现
 # ═══════════════════════════════════════════════════════
 
-# 泛称前缀：含这些字的"XX学院"通常是泛指（哪些学院/各学院），不是具体校名，跳过
-_SCHOOL_NAME_NOISE_CHARS = set("哪各本该这那我这你那谁每某多同几两")
+# 泛称前缀：含这些字的"XX学院"通常是泛指（哪些学院/各学院），不是具体校名，跳过。
+# 注意「同」不在其中：它会误伤「同济大学」——实测该校名整条被跳过、闸门放行。
+_SCHOOL_NAME_NOISE_CHARS = set("哪各本该这那我你那谁每某多几两")
+
+# 校名前常被正则一并吃进来的引导词/连接词。
+# `([一-龥]{2,8}?)(大学|学院)` 会把「告诉我清华大学」整体匹配成
+# 前缀「告诉我清华」；原实现随后因前缀含「我」（泛指字）丢掉整条候选，
+# 于是「告诉我/我想知道/请问 + 外校」可以稳定绕过库外闸门（2026-10-19 实测）。
+# 先把最后一个连接词之前的部分切掉，再剥引导词，剩下的才是校名。
+_SCHOOL_NAME_LEAD_FILLERS = (
+    "我想知道", "我想问一下", "我想问", "我想了解", "想了解", "想知道", "知道",
+    "告诉我", "告诉", "请问一下", "请问", "问一下", "麻烦问", "帮我查一下",
+    "帮我查", "帮我", "查询一下", "查询", "查一下", "查查", "搜一下", "搜索",
+    "搜搜", "看一下", "看看", "说说", "讲讲", "介绍一下", "请教", "了解",
+    "请", "帮", "我", "想", "查", "搜", "看", "问",
+)
+_LEAD_FILLER_RE = re.compile(
+    "^(?:" + "|".join(sorted(_SCHOOL_NAME_LEAD_FILLERS, key=len, reverse=True)) + ")+"
+)
+_LAST_CONNECTOR_RE = re.compile(r"^.*[和与跟及、，,。；;：:\s]")
+
 
 def _extract_school_names(text: str) -> list[str]:
     """从文本中提取形如「XX大学/XX学院」的学校名候选。
 
     - 用 (?!生) 排除"大学生"这类误匹配
-    - 前缀含泛指字（哪些/各/本…）的视为非校名，跳过
+    - 只取最后一个连接词（和/与/、/标点/空格）之后的部分，避免把整句吃进校名
+    - 剥掉引导词（告诉我/我想知道/请问/查询…）后再判断
+    - 剩余前缀含泛指字（哪些/各/本…）的视为非校名，跳过
     """
     names = []
     for m in re.finditer(r"([一-龥]{2,8}?)(大学(?!生)|学院)", text):
         prefix, suffix = m.group(1), m.group(2)
+        prefix = _LAST_CONNECTOR_RE.sub("", prefix)
+        prefix = _LEAD_FILLER_RE.sub("", prefix)
+        if len(prefix) < 2:
+            continue
         if any(ch in prefix for ch in _SCHOOL_NAME_NOISE_CHARS):
             continue
         names.append(prefix + suffix)

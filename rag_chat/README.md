@@ -62,6 +62,8 @@ rag_chat/
 ├── eval_baseline.py        # 评测：6 题基准真实链路（检索 + LLM）
 ├── eval_score.py           # 评测：60 分制打分器
 ├── eval_guard_probe.py     # 评测：召回自检能力探测（硬负例 / 无关题 / 正例）
+├── eval_verify.py          # 评测：规则核对答案事实是否落在检索来源里
+├── stress_retrieval.py     # 压测：检索层并发（不调 LLM）
 ├── auth.py                 # 注册 / 登录 / HMAC 会话 Cookie
 ├── db.py                   # SQLite：users / usage_daily / qa_audit
 ├── audit.py                # 问答审计采集（QATrace）与查询导出
@@ -339,8 +341,22 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 170 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_q6_rewrite_integration.py 假 LLM 端到端、test_time_range.py 相对时间解析、test_list_entry_regressions.py 列表页日期提取、test_html_parser_title.py 标题后缀截断、test_scraper_dead_link.py 死链页识别、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
+python -m pytest tests/ -v      # 196 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_prompt_injection.py 注入防线、test_q6_rewrite_integration.py 假 LLM 端到端、test_time_range.py 相对时间解析、test_list_entry_regressions.py 列表页日期提取、test_real_page_snapshots.py 官网真实页面快照、test_html_parser_title.py 标题后缀截断、test_scraper_dead_link.py 死链页识别、test_eval_verify.py 事实核对器、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
 ```
+
+两类**不进 pytest** 的测试工具（需要真实知识库/模型）：
+
+```bash
+python eval_verify.py eval_results_baseline_topk8.json   # 规则核对：日期/数字/链接能否在来源里找到
+python stress_retrieval.py --workers 8 --rounds 3        # 检索层并发压测（不调 LLM）
+```
+
+`eval_verify.py` 与 LLM 打分互补：打分回答「好不好」，核对回答「有没有编」。它检查答案里的
+日期、带单位数字、URL 是否全部落在检索来源中，退出码可直接用于 CI。
+
+`stress_retrieval.py` 用线程池并发调用 `_retrieve_candidates`，报告 p50/p95/p99、
+吞吐和失败用例；只读 Chroma，**不用停服务**。注意它是进程内线程压测，不覆盖
+uvicorn/网络层。
 
 ## 许可证
 

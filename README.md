@@ -11,7 +11,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?style=flat&logo=fastapi&logoColor=white)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-170%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-196%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -226,7 +226,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 149 条，零网络
+python -m pytest tests/ -v      # 196 条，零网络
 ```
 
 ---
@@ -665,7 +665,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 149 条，零网络
+python -m pytest tests/ -v      # 196 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
@@ -676,6 +676,13 @@ python -m pytest tests/ -v      # 149 条，零网络
 | `test_stream_gate.py` | 10 | 首句净化：逐字喂与整段喂结果一致（切片边界不影响） |
 | `test_hybrid_retriever.py` | 9 | RRF 融合保留 `vector_distance`，含「BM25 第一名污染 distance」机理 |
 | `test_out_of_kb_guard.py` | 8 | 库外闸门两层各自的分工（纯字符串） |
+| `test_prompt_injection.py` | 10 | 注入防线：引导词不能吞校名、计算器拒绝代码执行、未知工具不执行 |
+| `test_eval_verify.py` | 10 | 事实核对器：日期/数字/链接的落地与漏判边界 |
+| `test_time_range.py` | 8 | 相对时间解析（昨天/上周/上月/最近 N 天） |
+| `test_list_entry_regressions.py` | 7 | 列表页日期提取：日期链接合并、裸文本、中文前缀、文章链接不能当分页 |
+| `test_real_page_snapshots.py` | 6 | 官网**真实页面**快照：列表/详情/死链/多频道首页 |
+| `test_html_parser_title.py` | 4 | 标题站点后缀截断不能腰斩学年区间「2025-2026」 |
+| `test_scraper_dead_link.py` | 2 | 死链返回 200 + 「没有找到文章ID」时不能入库 |
 | `test_scraper_pagination.py` | 5 | 爬虫分页 URL 拼接回归 |
 | `test_scraper_early_stop.py` | 5 | 增量翻页「追平即停」——遇到已爬内容必须停止翻页 |
 | `test_html_parser_form_content.py` | 5 | 正文被包在 `<form>` 里时不许整篇丢（含「短控件表单仍要删」的反向用例） |
@@ -684,7 +691,7 @@ python -m pytest tests/ -v      # 149 条，零网络
 | `test_auth.py` | 20 | 注册 / 登录 / 会话签名与过期 / 额度原子扣减 |
 | `test_audit.py` | 14 | 问答审计落库、幂等、截断、工具配对、导出、保留期清理 |
 
-> 合计 = `pytest --collect-only` 的 149。**表要逐文件列全，不能拿"其余 N 条"一裹**——
+> 合计 = `pytest --collect-only` 的 196。**表要逐文件列全，不能拿"其余 N 条"一裹**——
 > 曾经这么裹过一次，漏掉的正好是一整个文件（29 条），表里的和顺口写的数字差了 29，
 > 而没人看得出差在哪。逐文件列全，加不起来就会当场暴露。
 
