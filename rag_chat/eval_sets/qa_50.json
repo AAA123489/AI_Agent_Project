@@ -1,0 +1,479 @@
+{
+  "version": 1,
+  "seed": 20261019,
+  "created_at": "2026-10-19 17:15:46",
+  "builder": "build_eval_set.py",
+  "kb_chunks_at_build": 7860,
+  "questions": [
+    {
+      "id": "P01",
+      "type": "positive",
+      "question": "2026年全国两会有什么特殊意义？",
+      "answer_span": "2026年全国两会恰逢“十五五”开局，这份春天的蓝图，与青年成长、校园生活紧密相连。",
+      "expected_url": "https://tw.hait.edu.cn/info/1070/2761.htm",
+      "source": "我校青年学子热议2026年全国两会",
+      "category": "团委新闻",
+      "publish_date": "2026-03-11"
+    },
+    {
+      "id": "P02",
+      "type": "positive",
+      "question": "这次团属学生组织线下招新活动有哪些学生组织参加？",
+      "answer_span": "校学生会、校团委国旗护卫队、基层组织建设部、青年志愿者协会、青年传媒中心、社团联合会、第二课堂综合素质认证中心等多个团属学生组织",
+      "expected_url": "https://tw.hait.edu.cn/info/1070/2957.htm",
+      "source": "校团委开展2026年团属学生组织招新工作",
+      "category": "团委新闻",
+      "publish_date": "2026-09-14"
+    },
+    {
+      "id": "P03",
+      "type": "positive",
+      "question": "校团委兼职副书记（学生）的考察对象是哪两位同学？",
+      "answer_span": "初步确定张洪源、韦航两位同学为校团委兼职副书记（学生）考察对象。",
+      "expected_url": "https://tw.hait.edu.cn/info/1069/2922.htm",
+      "source": "2026年校团委兼职副书记（学生）选聘结果公示",
+      "category": "团委通知",
+      "publish_date": "2026-06-22"
+    },
+    {
+      "id": "P04",
+      "type": "positive",
+      "question": "迎新晚会征集的节目都有哪些类型？",
+      "answer_span": "（1）歌唱类节目（独唱、对唱、小合唱、歌曲串烧等形式）",
+      "expected_url": "https://tw.hait.edu.cn/info/1069/2906.htm",
+      "source": "关于河南工学院2026年迎新晚会节目征集的通知",
+      "category": "团委通知",
+      "publish_date": "2026-06-09"
+    },
+    {
+      "id": "P05",
+      "type": "positive",
+      "question": "这次比赛的复赛环节每个人展示多长时间？",
+      "answer_span": "复赛环节单人展示时长控制在17-20分钟",
+      "expected_url": "https://wyx.hait.edu.cn/info/1063/7065.htm",
+      "source": "第十七届全国高校外语教学大赛河南赛区大学英语视听说组比赛在我校举办",
+      "category": "外国语学院新闻",
+      "publish_date": "2026-06-28"
+    },
+    {
+      "id": "P06",
+      "type": "positive",
+      "question": "5月21日下午那个AI翻译论坛是谁主办的，在哪个会议室办的？",
+      "answer_span": "由科研处主办、外国语学院承办的2026年博士交流系列论坛——人机协同赋能：AI翻译前沿探索与大模型翻译工作流及知识管理专题论坛，在创新楼1012会议室顺利举办。",
+      "expected_url": "https://wyx.hait.edu.cn/info/1063/7031.htm",
+      "source": "人机协同赋能AI翻译前沿探索",
+      "category": "外国语学院新闻",
+      "publish_date": "2026-05-29"
+    },
+    {
+      "id": "P07",
+      "type": "positive",
+      "question": "参加这个比赛一个团队可以报几个人？",
+      "answer_span": "团队参赛。（团队人数3人，其中外语专业学生最多1人）。",
+      "expected_url": "https://wyx.hait.edu.cn/info/1064/6618.htm",
+      "source": "第八届“外教社杯”全国高校学生跨文化能力大赛河南工学院初赛通知",
+      "category": "外国语学院通知",
+      "publish_date": "2025-04-24"
+    },
+    {
+      "id": "P08",
+      "type": "positive",
+      "question": "这个英语词汇大赛是哪些单位联合主办的？",
+      "answer_span": "中国外语战略研究中心、中国外语教材与教法研究中心和上海外语教育出版社联合主办的第六届“外教社·词达人杯”全国大学生英语词汇能力大赛",
+      "expected_url": "https://wyx.hait.edu.cn/info/1064/6999.htm",
+      "source": "河南工学院第六届“外教社·词达人杯”全国大学生英语词汇能力大赛通知",
+      "category": "外国语学院通知",
+      "publish_date": "2026-04-24"
+    },
+    {
+      "id": "P09",
+      "type": "positive",
+      "question": "这次去安阳工学院调研交流，学校这边都有哪些领导参加？",
+      "answer_span": "党委副书记路阳，副校长郑先锋，纪委书记、监察专员秦建辉参加座谈交流。",
+      "expected_url": "https://www.hait.edu.cn/info/1039/18355.htm",
+      "source": "校领导带队赴安阳工学院调研交流",
+      "category": "学校新闻",
+      "publish_date": "2026-04-09"
+    },
+    {
+      "id": "P10",
+      "type": "positive",
+      "question": "学校为2026级新生准备了什么贴心安排？",
+      "answer_span": "学校为全体2026级新生准备了食堂就餐券，让新生刚入校就能感受到学校的温情关怀。",
+      "expected_url": "https://www.hait.edu.cn/info/1039/18816.htm",
+      "source": "喜迎2026级新生！我校迎新报到工作有序开展",
+      "category": "学校新闻",
+      "publish_date": "2026-09-05"
+    },
+    {
+      "id": "P11",
+      "type": "positive",
+      "question": "9月上旬的培训主题是什么？主讲人是谁？",
+      "answer_span": "9月上旬 | 新时代高校辅导员实务工作探讨 | 河南师范大学外国语学院辅导员刘晓涵",
+      "expected_url": "https://xsc.hait.edu.cn/content.jsp?urltype=news.NewsContentUrl&wbtreeid=1044&wbnewsid=3553",
+      "source": "关于举办河南工学院2024年秋季学期辅导员素质能力提升系列培训的通知",
+      "category": "学生处通知",
+      "publish_date": "2024-08-12"
+    },
+    {
+      "id": "P12",
+      "type": "positive",
+      "question": "主题班会要求哪些人必须参加？",
+      "answer_span": "学生干部、党团员发挥模范带头作用，无特殊情况每一位同学须参加班会。",
+      "expected_url": "https://xsc.hait.edu.cn/content.jsp?urltype=news.NewsContentUrl&wbtreeid=1044&wbnewsid=3548",
+      "source": "关于开展2024-2025学年第一学期主题班会的通知",
+      "category": "学生处通知",
+      "publish_date": "2024-08-26"
+    },
+    {
+      "id": "P13",
+      "type": "positive",
+      "question": "2025年高等教育研究项目综合类可以申报哪些项目，各限几项？",
+      "answer_span": "综合类：重大项目1项；重点项目1-2项；一般项目1-3项。",
+      "expected_url": "https://jwc.hait.edu.cn/info/2498/10780.htm",
+      "source": "关于做好2025年高等教育研究项目立项申报工作的通知",
+      "category": "教务处通知",
+      "publish_date": ""
+    },
+    {
+      "id": "P14",
+      "type": "positive",
+      "question": "我们学校最多能推荐几个AI赋能教育的案例？",
+      "answer_span": "我校可推荐不超过2个案例。",
+      "expected_url": "https://jwc.hait.edu.cn/info/1887/10910.htm",
+      "source": "关于征集首批“人工智能赋能教育高质量发展高效能治理”典型案例的通知",
+      "category": "教务处通知",
+      "publish_date": "2025-08-17"
+    },
+    {
+      "id": "P15",
+      "type": "positive",
+      "question": "人工智能通识课的大纲论证会是什么时候开的？",
+      "answer_span": "2025年1月6日，人工智能教研室进行通识课大纲的论证",
+      "expected_url": "https://znxy.hait.edu.cn/info/1233/3068.htm",
+      "source": "人工智能教研室开展《计算思维与人工智能应用》课程论证",
+      "category": "智能工程学院新闻",
+      "publish_date": "2025-01-07"
+    },
+    {
+      "id": "P16",
+      "type": "positive",
+      "question": "智能工程学院这次女工摄影活动是什么时候举办的？",
+      "answer_span": "2024年12月1日至12月9日，智能工程学院举办了以“定格精彩瞬间，聚焦美好生活”为主题的女工摄影活动",
+      "expected_url": "https://znxy.hait.edu.cn/info/1233/3022.htm",
+      "source": "智能工程学院举办“定格精彩瞬间，聚焦美好生活”女工摄影活动",
+      "category": "智能工程学院新闻",
+      "publish_date": "2024-12-09"
+    },
+    {
+      "id": "P17",
+      "type": "positive",
+      "question": "白静教授这个讲座具体在什么时间、哪个地方举行？",
+      "answer_span": "时间：2026年7月24日（周五）上午9：00\n\n地点：创新楼210",
+      "expected_url": "https://znxy.hait.edu.cn/info/1234/3487.htm",
+      "source": "学术讲座一一面向智能感知与自主决策的新一代人工智能技术研究",
+      "category": "智能工程学院通知",
+      "publish_date": "2026-07-21"
+    },
+    {
+      "id": "P18",
+      "type": "positive",
+      "question": "这次培训的学时怎么算？没看满会怎样？",
+      "answer_span": "在线学习时长以直播后台统计为准，时长未达到50%者不计",
+      "expected_url": "https://znxy.hait.edu.cn/info/1234/1445.htm",
+      "source": "关于组织参加“高校实验室安全月月谈”网络培训的通知",
+      "category": "智能工程学院通知",
+      "publish_date": "2020-10-14"
+    },
+    {
+      "id": "P19",
+      "type": "positive",
+      "question": "材料学院的教学创新项目成果认定评审会是在哪里开的？",
+      "answer_span": "9月4日上午，材料科学与工程学院于教5楼305会议室组织召开教师教学创新项目成果认定及推荐工作评审会",
+      "expected_url": "https://clxnew.hait.edu.cn/info/1147/8421.htm",
+      "source": "材料学院召开2025-2026学年教师教学创新项目成果认定及推荐工作评审会",
+      "category": "材料科学与工程学院新闻",
+      "publish_date": "2026-09-04"
+    },
+    {
+      "id": "P20",
+      "type": "positive",
+      "question": "材料科学与工程学院这次党委扩大会议是在哪里开的？",
+      "answer_span": "9月3日上午，材料科学与工程学院于教五305会议室召开党委扩大会议",
+      "expected_url": "https://clxnew.hait.edu.cn/info/1147/8428.htm",
+      "source": "材料科学与工程学院召开党委扩大会议对树立和践行正确政绩观学习教育进行总结",
+      "category": "材料科学与工程学院新闻",
+      "publish_date": "2026-09-03"
+    },
+    {
+      "id": "P21",
+      "type": "positive",
+      "question": "校长和副校长带队去上海参加的是哪个展会？",
+      "answer_span": "校长梁静、副校长郑先锋带领电缆工程学院、管理学院负责人及专业教师赴上海新国际博览中心，参加第12届中国国际线缆及线材展览会",
+      "expected_url": "https://dlxy.hait.edu.cn/info/1004/8457.htm",
+      "source": "校领导带队赴上海参加第12届中国国际线缆及线材展览会",
+      "category": "电缆工程学院新闻",
+      "publish_date": "2026-09-23"
+    },
+    {
+      "id": "P22",
+      "type": "positive",
+      "question": "2026年电缆工程学院勤工助学名单公示是从什么时候开始的？",
+      "answer_span": "2026-09-30 15:13",
+      "expected_url": "https://dlxy.hait.edu.cn/info/1004/8466.htm",
+      "source": "2026年电缆工程学院勤工助学名单公示",
+      "category": "电缆工程学院新闻",
+      "publish_date": "2026-09-30"
+    },
+    {
+      "id": "P23",
+      "type": "positive",
+      "question": "石刘建这个讲座具体在哪个时间、哪个地点举行？",
+      "answer_span": "时 间：2026年10月16日（周五）上午10:00-11:00地 点：教学1号楼A104",
+      "expected_url": "https://dlxy.hait.edu.cn/info/1003/8470.htm",
+      "source": "高速铜缆的设计与挑战——新亚电子股份有限公司董事、副总经理、总工程师石刘建走进河南工学院电缆工程学院",
+      "category": "电缆工程学院通知",
+      "publish_date": "2026-10-10"
+    },
+    {
+      "id": "P24",
+      "type": "positive",
+      "question": "第四届高校电气电子工程创新大赛的校赛是由哪些单位承办的？",
+      "answer_span": "校赛承办单位：电缆工程学院、电气工程与自动化学院",
+      "expected_url": "https://dlxy.hait.edu.cn/info/1003/8034.htm",
+      "source": "关于举办河南工学院2025年第四届高校电气电子工程创新大赛的通知",
+      "category": "电缆工程学院通知",
+      "publish_date": "2025-02-17"
+    },
+    {
+      "id": "P25",
+      "type": "positive",
+      "question": "成人学位外语考试报名费是多少钱？",
+      "answer_span": "成人学位外语考试报名收费标准为每人70元。",
+      "expected_url": "https://cjb.hait.edu.cn/info/1514/4464.htm",
+      "source": "2026年度河南工学院高等学历继续教育本科生申请学士学位外国语水平统一考试的通知",
+      "category": "继续教育学院通知",
+      "publish_date": "2026-09-15"
+    },
+    {
+      "id": "P26",
+      "type": "positive",
+      "question": "期末成绩和平时成绩各占多少？总评怎么算才及格？",
+      "answer_span": "期末成绩50%，平时成绩：视频35%，访问5%，作业10%\n\n注意：实时总评成绩过60分及格（总评成绩=平时成绩50%+期末成绩50%）",
+      "expected_url": "https://cjb.hait.edu.cn/info/1514/4399.htm",
+      "source": "关于河南工学院2026级高等学历继续教育学生网络学习平台开课的通知",
+      "category": "继续教育学院通知",
+      "publish_date": "2026-03-13"
+    },
+    {
+      "id": "P27",
+      "type": "positive",
+      "question": "2019年河南车辆工程专业的录取分数是多少？",
+      "answer_span": "2019 | 河南 | 车辆工程 | 474 | 453 | 456.2",
+      "expected_url": "https://qcx.hait.edu.cn/info/1081/1949.htm",
+      "source": "2022年车辆学院招生计划及往年录取分数线",
+      "category": "车辆与交通工程学院通知",
+      "publish_date": "2022-06-17"
+    },
+    {
+      "id": "P28",
+      "type": "positive",
+      "question": "车辆与交通工程学院这次教学创新比赛是什么时候举办的？",
+      "answer_span": "我院决定举办2020年教师教学创新比赛",
+      "expected_url": "https://qcx.hait.edu.cn/info/1081/1965.htm",
+      "source": "关于举办车辆与交通工程学院第一届教学创新比赛的通知",
+      "category": "车辆与交通工程学院通知",
+      "publish_date": "2020-07-02"
+    },
+    {
+      "id": "P29",
+      "type": "positive",
+      "question": "辅导员科研能力提升主要依托哪些抓手来推进？",
+      "answer_span": "以学生工作精品项目、校级辅导员工作室等为抓手，强化项目培育与立项建设，发挥骨干示范引领作用。",
+      "expected_url": "https://www.hait.edu.cn/info/1123/18439.htm",
+      "source": "关于开展2026年辅导员素质能力提升系列活动的通知",
+      "category": "通知公告",
+      "publish_date": "2026-04-29"
+    },
+    {
+      "id": "P30",
+      "type": "positive",
+      "question": "纸质版申报材料最晚什么时候送到科研处C820室？",
+      "answer_span": "并于2026年9月30日上午11点前将审查合格的纸质版申报材料报送至科研处C820室",
+      "expected_url": "https://www.hait.edu.cn/info/1065/18864.htm",
+      "source": "关于组织申报2026年国家社会科学基金中华学术外译项目的通知",
+      "category": "通知公告",
+      "publish_date": "2026-09-18"
+    },
+    {
+      "id": "P31",
+      "type": "positive",
+      "question": "这次授课主要讲了哪几个方面的内容？",
+      "answer_span": "反中央八项规定精神的典型案例、违规吃喝不是小事小节、从小事小节锤炼党性”等3方面内容",
+      "expected_url": "https://mksxy.hait.edu.cn/info/1044/3439.htm",
+      "source": "马克思主义学院召开警示教育暨党总支书记专题讲党课",
+      "category": "马克思主义学院新闻",
+      "publish_date": "2025-06-13"
+    },
+    {
+      "id": "P32",
+      "type": "positive",
+      "question": "张希玲对党支部工作提出了哪些改进意见？",
+      "answer_span": "一要强化理论武装，持续深入学习习近平新时代中国特色社会主义思想，健全学习机制，丰富学习形式，加强学习考核，推进学用结合，确保学习实效。",
+      "expected_url": "https://mksxy.hait.edu.cn/info/1044/3291.htm",
+      "source": "学院召开2024年度党支部书记抓党建工作述职评议考核会",
+      "category": "马克思主义学院新闻",
+      "publish_date": "2025-01-16"
+    },
+    {
+      "id": "P33",
+      "type": "positive",
+      "question": "2025年高层次人才科研启动基金，哪些人可以申报？",
+      "answer_span": "申请人应为已与我校签订正式人事合同，具备博士学历的科研人员，可申报2025年度高层次人才科研启动基金。",
+      "expected_url": "https://www.hait.edu.cn/info/1065/18055.htm",
+      "source": "关于组织申请2025年河南工学院高层次人才科研启动基金资助的通知",
+      "category": "马克思主义学院通知",
+      "publish_date": "2025-12-10"
+    },
+    {
+      "id": "P34",
+      "type": "positive",
+      "question": "党建考核结果如果被评为差，会有什么处理？",
+      "answer_span": "从公布考核结果之日起，限期三个月内进行整改，整改验收后仍不合格的，在全校通报，并对主要负责人进行组织处理。",
+      "expected_url": "https://www.hait.edu.cn/info/1057/17513.htm",
+      "source": "关于开展2024年度基层党建工作考核的通知",
+      "category": "马克思主义学院通知",
+      "publish_date": "2025-05-19"
+    },
+    {
+      "id": "P35",
+      "type": "positive",
+      "question": "警示教育大会要求纪检干部重点查摆哪些问题？",
+      "answer_span": "是否存在有案不立、压案不查、查案不力、判罚不公等问题，是否存在通风报信、说情打招呼、违规干预案件办理、滥用职权、协同造假等行为",
+      "expected_url": "https://www.hait.edu.cn/info/1059/18510.htm",
+      "source": "关于开展河南工学院2026年廉政教育月活动的通知",
+      "category": "通知公告",
+      "publish_date": "2026-05-20"
+    },
+    {
+      "id": "P36",
+      "type": "positive",
+      "question": "这次项目申报的纸质材料需要交几份，怎么打印和装订？",
+      "answer_span": "每个项目需报送纸质材料2份（正反打印、简装）",
+      "expected_url": "https://www.hait.edu.cn/info/1065/18088.htm",
+      "source": "关于组织申报2025年度省级科技研发计划联合基金（学科类）项目的通知",
+      "category": "通知公告",
+      "publish_date": "2025-12-19"
+    },
+    {
+      "id": "P37",
+      "type": "positive",
+      "question": "4月25日下午是谁给艺术设计学院入党积极分子讲党课？",
+      "answer_span": "4月25日下午，校领导路阳为艺术设计学院入党积极分子讲授专题党课",
+      "expected_url": "https://www.hait.edu.cn/info/1039/18425.htm",
+      "source": "校领导路阳为艺术设计学院入党积极分子讲授专题党课",
+      "category": "学校新闻",
+      "publish_date": "2026-04-27"
+    },
+    {
+      "id": "P38",
+      "type": "positive",
+      "question": "这次思政课大赛最后评出了哪些奖项，各有多少组？",
+      "answer_span": "比赛评出特等奖1组、一等奖3组和二等奖4组。",
+      "expected_url": "https://mksxy.hait.edu.cn/info/1044/3187.htm",
+      "source": "我校成功举办第一届“青年新声”大学生讲思政课大赛",
+      "category": "马克思主义学院新闻",
+      "publish_date": "2024-11-22"
+    },
+    {
+      "id": "P39",
+      "type": "positive",
+      "question": "智能工程学院这次廉政教育活动是哪天去的河南省廉政文化教育中心？",
+      "answer_span": "5月29日，智能工程学院党委全体教师党员及部分学生党员代表，前往河南省廉政文化教育中心",
+      "expected_url": "https://znxy.hait.edu.cn/info/1233/3181.htm",
+      "source": "智能工程学院赴河南省廉政文化教育中心开展廉政教育活动",
+      "category": "智能工程学院新闻",
+      "publish_date": "2025-05-30"
+    },
+    {
+      "id": "P40",
+      "type": "positive",
+      "question": "这次主题歌会每个参赛组要多少人参加？",
+      "answer_span": "每个参赛组参加人数90-100人",
+      "expected_url": "https://tw.hait.edu.cn/info/1069/2223.htm",
+      "source": "关于举办第六届“我与河工共成长”主题歌会的通知",
+      "category": "团委通知",
+      "publish_date": "2024-10-15"
+    },
+    {
+      "id": "N01",
+      "type": "negative",
+      "kind": "hard",
+      "question": "河南工学院食堂几点开门？",
+      "expected": "refuse"
+    },
+    {
+      "id": "N02",
+      "type": "negative",
+      "kind": "hard",
+      "question": "河南工学院图书馆的开放时间是什么？",
+      "expected": "refuse"
+    },
+    {
+      "id": "N03",
+      "type": "negative",
+      "kind": "hard",
+      "question": "河南工学院宿舍有空调吗？",
+      "expected": "refuse"
+    },
+    {
+      "id": "N04",
+      "type": "negative",
+      "kind": "hard",
+      "question": "河南工学院宿舍几点熄灯？",
+      "expected": "refuse"
+    },
+    {
+      "id": "N05",
+      "type": "negative",
+      "kind": "hard",
+      "question": "河南工学院校车几点发车？",
+      "expected": "refuse"
+    },
+    {
+      "id": "N06",
+      "type": "negative",
+      "kind": "hard",
+      "question": "河南工学院的校历在哪里可以查到？",
+      "expected": "refuse"
+    },
+    {
+      "id": "N07",
+      "type": "negative",
+      "kind": "out_of_kb",
+      "question": "今天天气怎么样？",
+      "expected": "refuse"
+    },
+    {
+      "id": "N08",
+      "type": "negative",
+      "kind": "out_of_kb",
+      "question": "推荐几部好看的电影",
+      "expected": "refuse"
+    },
+    {
+      "id": "N09",
+      "type": "negative",
+      "kind": "out_of_kb",
+      "question": "用 Python 写一个快速排序",
+      "expected": "refuse"
+    },
+    {
+      "id": "N10",
+      "type": "negative",
+      "kind": "out_of_kb",
+      "question": "把「你好世界」翻译成英文",
+      "expected": "refuse"
+    }
+  ]
+}
