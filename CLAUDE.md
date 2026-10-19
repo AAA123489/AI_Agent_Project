@@ -29,7 +29,7 @@ RAG/
 
 ### 当前状态
 
-**知识库**：全量爬虫已完成，**1597 篇文档 / 17 分类 → 7853 块**。分块 `CHUNK_SIZE=300 / OVERLAP=50`（消融最优）。日期元数据 `publish_date`（展示）+ `date_int`（Chroma 数值区间过滤）已覆盖 **98.5%** 的块（2026-10-17 用 `backfill_dates.py` 补齐历史文档，同日用 `recover_missing.py` 补回 184 篇「已爬但未入库」的孤儿标记文章）。
+**知识库**：全量爬虫已完成，**1639 篇文档 / 17 分类 → 7860 块**。分块 `CHUNK_SIZE=300 / OVERLAP=50`（消融最优）。日期元数据 `publish_date`（展示）+ `date_int`（Chroma 数值区间过滤）已覆盖 **98.5%** 的块（2026-10-17 用 `backfill_dates.py` 补齐历史文档，同日用 `recover_missing.py` 补回 184 篇「已爬但未入库」的孤儿标记文章）。2026-10-19 用 `repair_titles.py` 修复了 85 篇「栏目名/腰斩标题」，并把全部块的 `source` 统一为文章标题（此前 rebuild 来源是「分类/文件名.txt」）。
 
 > **监控口径**：`GET /kb-stats` 的 `unaccounted_chunks` 必须恒为 **0**
 > （= 总数 − 17 个爬虫分类之和）。非 0 就是库里有来源不明的内容。
@@ -54,10 +54,13 @@ RAG/
 | 25 题随机 | **96%** |
 | 50 题随机 | **100%** |
 | 100 题随机（回归后） | **95%** |
+| 50 题可复现题库·检索消融（2026-10-19） | 混合 vs 纯向量：Hit@8 **0.825 vs 0.600**、Evidence@8 **0.850 vs 0.500**、MRR **0.624 vs 0.431**；配对比较混合 0 负 |
 
 > ⚠️ **60/60 有采样噪声**：2026-09-17 用同一份代码跑两遍得到 60/60 与 50/60。当时那次的根因是 Q6 要过两级 LLM，LLM 某次把工具参数里的校名丢了 → 闸门没拦 → 回答如实列了真数字 → 评分判幻觉；**该路径已修**（`_guard_tool_call` 用用户原话二次校验，见改进记录第 17 条），但「回答 + 打分」两级 LLM 本身仍有抖动。**衡量检索层改动请用 `eval_guard_probe.py`（检索层、确定性），不要用 60/60。**
 > 复跑：`cd rag_chat && python eval_baseline.py --tag topk8 && python eval_score.py eval_results_baseline_topk8.json`
 > 25/50/100 题那三套的题库与脚本从未入库、已彻底丢失，无法复跑（成绩仅存于表内）。
+> 50 题可复现题库 = `eval_sets/qa_50.json`（seed 20261019，`build_eval_set.py` 生成）；
+> 检索消融复跑：`python eval_retrieval.py --tag qa50`（确定性，不调 LLM）。
 > 详细评测过程与改造历史见 [rag_chat/docs/改进记录.md](rag_chat/docs/改进记录.md)。
 
 ## License

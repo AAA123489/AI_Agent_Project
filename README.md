@@ -1,10 +1,10 @@
 # RAG 智能知识库问答系统
 
 基于 **FastAPI + ChromaDB + DeepSeek** 的检索增强生成（RAG）问答后端。把河南工学院官网
-**1597 篇公开文档 / 17 个分类**全量爬进知识库，变成可自然语言提问的问答系统——
+**1639 篇公开文档 / 17 个分类**全量爬进知识库，变成可自然语言提问的问答系统——
 答案**附原文链接**，检索不到就**拒答**而不是编造。
 
-知识库**只由爬虫构建**：没有上传入口，1597 篇全部来自官网公开栏目，**每一块都能追溯到
+知识库**只由爬虫构建**：没有上传入口，1639 篇全部来自官网公开栏目，**每一块都能追溯到
 一个具体 URL**。系统因此可以说清自己知道什么、不知道什么——这正是它能放心拒答的前提。
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat&logo=python&logoColor=white)
@@ -92,12 +92,12 @@
 HTML → 纯文本（动易 CMS / JSP 模板适配，按栏目配选择器）
    │  sanitize_privacy 隐私脱敏（删手机号 / 邮箱，保留办公座机）
    ▼
-递归切分器（300 字 / 50 字重叠）
-   │  块 ID = sha256(相对路径)，source = "分类/文件名"
+递归切分器（300 字 / 50 字重叠，带重叠窗口）
+   │  块 ID 由文档标识生成，source = 文章标题
    ▼
 paraphrase-multilingual-MiniLM-L12-v2 向量化
    ▼
-ChromaDB（collection: my_rag_collection，7853 块）
+ChromaDB（collection: my_rag_collection，7860 块）
 ```
 
 > **这条链路不只跑一次**：服务运行期间每天 `10:00` 自动增量重跑一遍（爬虫按 URL 去重，

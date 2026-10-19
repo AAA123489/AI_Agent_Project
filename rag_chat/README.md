@@ -63,6 +63,9 @@ rag_chat/
 ├── eval_score.py           # 评测：60 分制打分器
 ├── eval_guard_probe.py     # 评测：召回自检能力探测（硬负例 / 无关题 / 正例）
 ├── eval_verify.py          # 评测：规则核对答案事实是否落在检索来源里
+├── build_eval_set.py       # 评测：生成可复现的 50 题题库（固定 seed）
+├── eval_retrieval.py       # 评测：向量 vs 混合检索消融（确定性，不调 LLM）
+├── repair_titles.py        # 数据修复：栏目名/腰斩标题重抓重嵌入
 ├── stress_retrieval.py     # 压测：检索层并发（不调 LLM）
 ├── auth.py                 # 注册 / 登录 / HMAC 会话 Cookie
 ├── db.py                   # SQLite：users / usage_daily / qa_audit
@@ -340,10 +343,50 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 
 > 25/50/100 题那三套随机评测的题库与脚本从未入库，已丢失、无法复跑。
 
+### 可复现的 50 题题库与检索消融
+
+上面那三套随机评测无法复算，60/60 又有两级 LLM 抖动。为了论文里的检索结论
+可复现，2026-10-19 重建了一套固定题库和确定性评测：
+
+| 文件 | 作用 |
+|------|------|
+| `build_eval_set.py` | 固定 seed 分层采样 40 篇文档，LLM 出题 + **程序化校验答案逐字出自原文**；加 10 道负例 → `eval_sets/qa_50.json` |
+| `eval_sets/qa_50.json` | 题库本体（已提交）。评测时不再调 LLM，重跑结果只受代码与知识库影响 |
+| `eval_retrieval.py` | 只打检索层 `_retrieve_candidates`，同一进程切换 vector/hybrid 两档 |
+
+```bash
+python build_eval_set.py                 # 重建题库（会调 40 次 DeepSeek，仅在换库时用）
+python eval_retrieval.py --tag qa50      # → eval_results_retrieval_qa50.json
+```
+
+**结果**（2026-10-19，题库 seed=20261019，top_k=8，40 道正例）：
+
+| 指标 | 纯向量 | 混合（向量+BM25 RRF） |
+|------|--------|----------------------|
+| Hit@1 | 0.350 | **0.525** |
+| Hit@3 | 0.475 | **0.650** |
+| Hit@5 | 0.500 | **0.775** |
+| Hit@8 | 0.600 | **0.825** |
+| MRR | 0.431 | **0.624** |
+| Evidence@8（答案句逐字进上下文） | 0.500 | **0.850** |
+| 正例被库外闸门误拦 | 0 | 0 |
+| 平均检索耗时 | 393 ms | 281 ms |
+
+配对比较（同一题两档对照）里混合检索**没有输过一题**：Hit@8 上 hybrid 独赢 9 题、
+vector 独赢 0 题；Evidence@8 上 hybrid 独赢 14 题、vector 独赢 0 题（McNemar 精确检验
+p 均 < 0.01）。混合档平均还更快，因为 BM25 补上了向量相似度不够、但关键词精确命中的文档，
+减少了同文档补块的开销。
+
+> 口径说明：Hit 按题库标注的**期望 URL** 判定，同一篇通知被转载到多个栏目时
+> （如讲座通知同时出现在学校站和学院站）会记为未命中，所以 Hit@8 偏保守；
+> Evidence@8（答案句是否真的进了上下文）更能代表「LLM 有没有材料可答」。
+> 负例的拒答由 `eval_guard_probe.py` 单独量，本脚本只看库外闸门（0/10，符合预期：
+> 闸门只校验校名，负例里不出现外校名）。
+
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 216 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_prompt_injection.py 注入防线、test_q6_rewrite_integration.py 假 LLM 端到端、test_time_range.py 相对时间解析、test_list_entry_regressions.py 列表页日期提取、test_real_page_snapshots.py 官网真实页面快照、test_html_parser_title.py 标题后缀截断、test_scraper_dead_link.py 死链页识别、test_eval_verify.py 事实核对器、test_content_recheck.py 正文变更复检、test_html_parser_remove_keywords.py 导航块误删回归、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
+python -m pytest tests/ -v      # 222 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_prompt_injection.py 注入防线、test_q6_rewrite_integration.py 假 LLM 端到端、test_time_range.py 相对时间解析、test_list_entry_regressions.py 列表页日期提取、test_real_page_snapshots.py 官网真实页面快照、test_html_parser_title.py 标题后缀截断与栏目名 h1、test_scraper_dead_link.py 死链页识别、test_eval_verify.py 事实核对器、test_content_recheck.py 正文变更复检、test_html_parser_remove_keywords.py 导航块误删回归、test_auth.py 账号会话、test_audit.py 审计、test_eval_set.py 题库结构，均零网络；test_vector_store.py 读临时 Chroma）
 ```
 
 两类**不进 pytest** 的测试工具（需要真实知识库/模型）：

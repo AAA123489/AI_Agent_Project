@@ -82,6 +82,27 @@ def _strip_site_suffix(raw: str) -> str:
     return raw[: m.start()].strip(" -—|")
 
 
+# 栏目名常出现在详情页的 <h1> 里（电缆工程学院模板：<h1>通知公告</h1>，
+# 真正的标题只在 <title>）。这类 h1 不能当文章标题，否则同栏目所有文章
+# 共用一个 source，引用来源全变成「通知公告」，检索回填也会串文章。
+_COLUMN_HEADINGS = {
+    "通知公告", "学院新闻", "学校新闻", "新闻动态", "新闻中心", "最新动态",
+    "学院通知", "学院动态", "学校通知", "首页", "通知", "新闻", "公告",
+}
+_COLUMN_SUFFIX_RE = re.compile(r"^[一-龥]{0,6}(公告|通知|新闻|动态|要闻|简报|讲座|活动)$")
+
+
+def _looks_like_column_heading(text: str) -> bool:
+    """判断 h1 文本是不是栏目名而不是文章标题。
+
+    只判短文本（≤10 字）：「关于开展…活动的通知」这类完整标题不能被误判。
+    """
+    t = re.sub(r"\s+", "", text or "")
+    if not t or len(t) > 10:
+        return False
+    return t in _COLUMN_HEADINGS or bool(_COLUMN_SUFFIX_RE.match(t))
+
+
 def _normalize_date(date_str: str) -> str:
     """将各种日期格式统一为 YYYY-MM-DD。"""
     if not date_str:
@@ -243,16 +264,20 @@ def parse_html(html: str, url: str = "") -> tuple[str, dict]:
         if title_tag:
             title = title_tag.get_text(strip=True)
             break
-    # 方式2: h1
+    # 方式2: h1（栏目页模板里 h1 是栏目名，如「通知公告」，只作为兜底）
     if not title:
         h1 = soup.find("h1")
         if h1:
             title = h1.get_text(strip=True)
     # 方式3: title 标签（去除后缀 "-欢迎访问河南工学院"）
-    if not title:
+    # h1 缺失或只是栏目名时，用 <title>；仅当 <title> 明显更完整才覆盖，
+    # 避免个别站点 <title> 只写站名、反而丢掉 h1 里的真标题。
+    if not title or _looks_like_column_heading(title):
         title_tag = soup.find("title")
         if title_tag:
-            title = _strip_site_suffix(title_tag.get_text(strip=True))
+            candidate = _strip_site_suffix(title_tag.get_text(strip=True))
+            if candidate and (not title or len(candidate) > len(title)):
+                title = candidate
 
     # ── 提取日期 ──
     publish_date = ""

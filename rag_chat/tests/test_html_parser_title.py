@@ -59,3 +59,47 @@ def test_parse_html_uses_fixed_title():
     )
 
     assert meta["title"] == "关于公布2025-2026学年第二学期开放实验项目结项名单的通知"
+
+
+# ── 栏目名 h1 不能顶替文章标题（2026-10-19）─────────────────────────────
+# 电缆工程学院模板：<h1>通知公告</h1>，真标题只在 <title>。
+# 修之前 27 篇文章（118 块）的 source 是「通知公告」「学院新闻」。
+
+
+def _page_with_h1(title: str, h1: str | None) -> str:
+    body = f"<h1>{h1}</h1>" if h1 is not None else ""
+    return f"<html><head><title>{title}</title></head><body>{body}<p>正文</p></body></html>"
+
+
+def test_column_h1_does_not_override_title():
+    """h1 是栏目名时，标题取 <title>（真实文章标题）。"""
+    _, meta = parse_html(
+        _page_with_h1(
+            "学术讲座——《探索原子世界：原子成像与精准操纵》-电缆工程学院",
+            "通知公告",
+        ),
+        "https://dlxy.hait.edu.cn/info/1003/8412.htm",
+    )
+
+    assert meta["title"] == "学术讲座——《探索原子世界：原子成像与精准操纵》"
+
+
+def test_real_h1_title_still_wins():
+    """h1 是正常文章标题、<title> 只是站名时，保留 h1。"""
+    _, meta = parse_html(
+        _page_with_h1("河南工学院", "关于开展2025年实验室安全检查的通知"),
+        "https://example.edu.cn/info/1.htm",
+    )
+
+    assert meta["title"] == "关于开展2025年实验室安全检查的通知"
+
+
+def test_long_notice_title_is_not_treated_as_column():
+    """「关于…的通知」这类完整标题即便以「通知」结尾也不能当栏目名。"""
+    real = "关于组织开展2025-2026学年第一学期学生评教工作的通知"
+    _, meta = parse_html(
+        _page_with_h1(real + "-教务处", real),
+        "https://jwc.hait.edu.cn/info/1887/1.htm",
+    )
+
+    assert meta["title"] == real
