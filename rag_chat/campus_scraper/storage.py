@@ -6,7 +6,7 @@ campus_scraper/storage.py — sqlite3 本地缓存
 
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # 数据库文件放在 campus_scraper 包目录下
@@ -77,6 +77,34 @@ def get_scraped_urls(db_path: str | None = None) -> set[str]:
     rows = conn.execute("SELECT url FROM scraped_articles").fetchall()
     conn.close()
     return {r["url"] for r in rows}
+
+
+def get_recent_scraped(
+    category: str,
+    days: int,
+    limit: int = 5,
+    db_path: str | None = None,
+) -> list[dict]:
+    """取最近 days 天内入库、且记录了正文哈希的文章，按入库时间从旧到新。
+
+    用于「URL 不变、正文被改」的复检（scraper 默认按 URL 去重，改字感知不到）。
+    升序 = 先检查快要滑出窗口的文章，保证每篇在窗口内至少轮到一次；
+    刚在本轮入库的排最后，不会当天再抓一遍。
+    """
+    if days <= 0 or limit <= 0:
+        return []
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    conn = _connect(db_path)
+    rows = conn.execute(
+        """SELECT url, title, publish_date, category, content_hash, scraped_at
+           FROM scraped_articles
+           WHERE category = ? AND scraped_at >= ? AND content_hash <> ''
+           ORDER BY scraped_at ASC
+           LIMIT ?""",
+        (category, cutoff, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_stats(db_path: str | None = None) -> dict:

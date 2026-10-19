@@ -90,6 +90,19 @@ class VectorStore:
         self.collection.delete(where={"source": source})
         logger.info("已删除 source='%s' 的旧数据", source)
 
+    def get_ids_by_url(self, url: str) -> list[str]:
+        """取某篇文章当前的全部块 id（正文变更后按 id 精确删旧块）。"""
+        result = self.collection.get(where={"url": url})
+        return list(result.get("ids") or [])
+
+    def delete_ids(self, ids: list[str]) -> None:
+        """按 id 删除块。先取 id 再删，不能用 delete(where={"url"})——
+        那样会把刚嵌入的新块一起删掉（新旧块同 url）。"""
+        if not ids:
+            return
+        self.collection.delete(ids=ids)
+        logger.info("已删除 %d 个旧块", len(ids))
+
     def clear_all(self):
         """清空 collection 中的所有文档"""
         count = self.collection.count()

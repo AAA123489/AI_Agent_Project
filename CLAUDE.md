@@ -23,13 +23,13 @@ RAG/
 | 库外拦截 | 主体校校验（两层：工具参数 + 用户原话），外校问题直接拒答不检索 |
 | 流式对话 | SSE（Server-Sent Events）流式推送 |
 | 多轮记忆 | Redis LPUSH + EXPIRE 30 分钟过期 |
-| 自动更新 | 定时增量爬取（每天 10:00）+ 启动补跑，爬完自动清查询缓存 |
+| 自动更新 | 定时增量爬取（每天 10:00）+ 启动补跑；爬完重建 BM25 索引、清查询缓存，并复检「URL 不变但正文被改」 |
 
 详见 [rag_chat/README.md](rag_chat/README.md)
 
 ### 当前状态
 
-**知识库**：全量爬虫已完成，**1594 篇文档 / 17 分类 → 7833 块**。分块 `CHUNK_SIZE=300 / OVERLAP=50`（消融最优）。日期元数据 `publish_date`（展示）+ `date_int`（Chroma 数值区间过滤）已覆盖 **98.5%** 的块（2026-10-17 用 `backfill_dates.py` 补齐历史文档，同日用 `recover_missing.py` 补回 184 篇「已爬但未入库」的孤儿标记文章）。
+**知识库**：全量爬虫已完成，**1597 篇文档 / 17 分类 → 7853 块**。分块 `CHUNK_SIZE=300 / OVERLAP=50`（消融最优）。日期元数据 `publish_date`（展示）+ `date_int`（Chroma 数值区间过滤）已覆盖 **98.5%** 的块（2026-10-17 用 `backfill_dates.py` 补齐历史文档，同日用 `recover_missing.py` 补回 184 篇「已爬但未入库」的孤儿标记文章）。
 
 > **监控口径**：`GET /kb-stats` 的 `unaccounted_chunks` 必须恒为 **0**
 > （= 总数 − 17 个爬虫分类之和）。非 0 就是库里有来源不明的内容。
@@ -43,6 +43,7 @@ RAG/
 - `RECALL_GUARD=on`（召回自检，2026-10-16 默认值由 off 翻为 on——消融数据支持开：负例 0/6 → 6/6、正例零误拒）、`RECALL_GUARD_MAX_ATTEMPTS=1`（检索轮数，2 = 开改写重检环，环被消融否决保持 1）
 - `RECENT_WINDOW_DAYS=30`（「最近/近来/最新」这类没有确定所指的词，统一按最近 N 天处理；带数字的「最近三天」不受影响）
 - `SCRAPE_SCHEDULE_ENABLED=on`（自动更新知识库，每天 10:00 增量爬取）、`SCRAPE_SCHEDULE_PAGES=1`（日常页数上限）、`SCRAPE_CATCHUP_PAGES=3`（补跑页数上限）、`SCRAPE_CATCHUP_DAYS=3`（启动补跑阈值，0 = 关）
+- `SCRAPE_RECHECK_DAYS=7`（URL 不变、正文被改的复检窗口，0 = 关）、`SCRAPE_RECHECK_MAX=5`（每分类每次最多复检几篇）
 
 **评测成绩单**：
 

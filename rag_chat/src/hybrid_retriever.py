@@ -150,6 +150,20 @@ def get_bm25_retriever(collection) -> Bm25Retriever | None:
     return _bm25_retriever
 
 
+def reset_bm25_retriever() -> None:
+    """丢弃全局索引，下次检索时按当前 collection 重建。
+
+    定时增量爬取会往 Chroma 写入新块，但 BM25 是**进程内一次性建的倒排索引**——
+    不重置的话，新文章在重启服务前永远进不了关键词召回（向量路能看到，
+    两条路的召回集不一致，正好破坏 RRF 融合的前提）。
+    爬取任务入库成功后调用；没有新内容时不要调，重建一次要几秒到十几秒。
+    """
+    global _bm25_retriever
+    with _bm25_build_lock:
+        _bm25_retriever = None
+    logger.info("BM25 索引已置空，下次检索重建")
+
+
 def rrf_fuse(vector_results: list[dict], bm25_results: list[dict], k: int = 60, top_n: int = 8) -> list[dict]:
     """Reciprocal Rank Fusion：把两路排序的名次融合成单一排序。
 

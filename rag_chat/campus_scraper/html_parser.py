@@ -33,6 +33,17 @@ _REMOVE_KEYWORDS = [
     "copyright", "hotnews", "recommend", "related", "share",
 ]
 
+# class/id 里以关键词**开头**才算命中（token 边界），不做任意子串匹配：
+# - 必须保留前缀匹配：动易的搜索容器是 class="searchstyle1092668"，没有分隔符；
+# - 但子串匹配会把 research / unrelated / photonews（含 hotnews）误删成导航，
+#   整篇正文跟着消失——0 字会被当成「无正文」静默跳过。
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+# 以 share 开头但语义不是「分享组件」的词（共享/股权类），必须放行
+_SHARE_FALSE_FRIENDS = {
+    "shared", "shares", "sharing", "shareable", "shareholder", "shareholders",
+}
+
 # ── <form> 的例外阈值：文字量达到这个数的 form 当正文留着，不当控件删 ──
 # 动易的部分模板把**整篇正文**包在 <form> 里（实测 dlxy.hait.edu.cn 的
 # <div class="page_content"> 890 字，100% 落在其中的 <form> 内）。无条件删 form
@@ -104,9 +115,14 @@ def _should_remove(tag: Tag) -> bool:
     id_str = tag.get("id", "") or ""
 
     combined = (class_str + " " + id_str).lower()
-    for kw in _REMOVE_KEYWORDS:
-        if kw in combined:
-            return True
+    # 先按非字母数字切 token（nav-menu → nav/menu），再对每个 token 做前缀匹配，
+    # 既保住 searchstyle1092668 这类无分隔符的类名，又不再误伤 research。
+    for token in _TOKEN_SPLIT_RE.split(combined):
+        if not token or token in _SHARE_FALSE_FRIENDS:
+            continue
+        for kw in _REMOVE_KEYWORDS:
+            if token.startswith(kw):
+                return True
     return False
 
 

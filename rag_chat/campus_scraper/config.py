@@ -18,6 +18,14 @@ RETRY_BACKOFF_BASE = 5               # 重试退避基数，第 n 次重试等�
 # ── 日期过滤 ──
 DATE_FILTER_DAYS = 730               # 仅保留近 2 年的内容
 
+# ── 内容变更复检（URL 不变、正文被改） ──
+# 增量爬取按 URL 去重：学校把名单/简章改了几个字，URL 不变，系统永远看不到，
+# 库里一直是旧版本。每天从「最近入库」的文章里抽检若干篇重算正文哈希，
+# 变了就删旧块重嵌。默认值只是兜底，实际以 .env 的 SCRAPE_RECHECK_DAYS /
+# SCRAPE_RECHECK_MAX 为准（在爬取任务里惰性读取，保证 load_dotenv 已生效）。
+SCRAPE_RECHECK_DAYS_DEFAULT = 7      # 只复检最近 7 天入库的文章；0 = 关闭
+SCRAPE_RECHECK_MAX_DEFAULT = 5       # 每个分类每天最多复检 5 篇（每次都要发请求）
+
 # ── 每类最多爬取页数（列表页） ──
 MAX_LIST_PAGES = 10                  # 每类最多 10 页，约 200 篇
 

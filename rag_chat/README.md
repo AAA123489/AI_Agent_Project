@@ -129,7 +129,7 @@ python app_fastapi.py
 
 **默认开启**。服务运行期间每天到点自动跑一次「爬取 → 入库 → 清查询缓存」，不用人工干预。
 
-爬虫本身是**增量**的（`campus_scraper/storage.py` 按 URL 去重），重复跑不会重复入库，只捞新增文章——所以定时跑是安全的，不会撑大知识库、也不需要清库重建。
+爬虫本身是**增量**的（`campus_scraper/storage.py` 按 URL 去重），重复跑不会重复入库，只捞新增文章——所以定时跑是安全的，不会撑大知识库、也不需要清库重建。去重只认 URL：学校改了正文却沿用原链接时感知不到，由每次爬取后的**正文变更复检**兜底（比对 `content_hash`，变了就删旧块重嵌入）。
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
@@ -138,6 +138,8 @@ python app_fastapi.py
 | `SCRAPE_SCHEDULE_PAGES` | `1` | 日常每类**最多**爬几页（上限，非固定成本） |
 | `SCRAPE_CATCHUP_PAGES` | `3` | 启动补跑每类最多爬几页 |
 | `SCRAPE_CATCHUP_DAYS` | `3` | 距上次成功爬取超过这么多天，启动后补跑一次；`0` = 关闭补跑 |
+| `SCRAPE_RECHECK_DAYS` | `7` | 正文变更复检窗口：抽检最近 N 天入库的文章，哈希变了就重嵌入；`0` = 关闭 |
+| `SCRAPE_RECHECK_MAX` | `5` | 每个分类每次最多复检几篇（每篇一次真实请求，遵守 4~9 秒间隔） |
 
 **页数是上限，不是固定成本。** 列表页是跨页严格新→旧的连续序列（实测：通知公告第 1/2/3 页分别是 `10-10~09-23` / `09-22~09-03` / `09-02~08-05`，无缝衔接），所以爬虫**一旦在某页遇到已爬过的 URL 就停止翻页**——说明时间线已经接上缓存，后面的页只会更旧。
 
@@ -341,7 +343,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 196 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_prompt_injection.py 注入防线、test_q6_rewrite_integration.py 假 LLM 端到端、test_time_range.py 相对时间解析、test_list_entry_regressions.py 列表页日期提取、test_real_page_snapshots.py 官网真实页面快照、test_html_parser_title.py 标题后缀截断、test_scraper_dead_link.py 死链页识别、test_eval_verify.py 事实核对器、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
+python -m pytest tests/ -v      # 216 条（test_recall_guard.py 召回自检、test_hybrid_retriever.py RRF 融合、test_stream_gate.py 首句净化、test_out_of_kb_guard.py 库外闸门、test_prompt_injection.py 注入防线、test_q6_rewrite_integration.py 假 LLM 端到端、test_time_range.py 相对时间解析、test_list_entry_regressions.py 列表页日期提取、test_real_page_snapshots.py 官网真实页面快照、test_html_parser_title.py 标题后缀截断、test_scraper_dead_link.py 死链页识别、test_eval_verify.py 事实核对器、test_content_recheck.py 正文变更复检、test_html_parser_remove_keywords.py 导航块误删回归、test_auth.py 账号会话、test_audit.py 审计，均零网络；test_vector_store.py 读临时 Chroma）
 ```
 
 两类**不进 pytest** 的测试工具（需要真实知识库/模型）：

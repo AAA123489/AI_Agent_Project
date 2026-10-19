@@ -1,17 +1,17 @@
 # RAG 智能知识库问答系统
 
 基于 **FastAPI + ChromaDB + DeepSeek** 的检索增强生成（RAG）问答后端。把河南工学院官网
-**1594 篇公开文档 / 17 个分类**全量爬进知识库，变成可自然语言提问的问答系统——
+**1597 篇公开文档 / 17 个分类**全量爬进知识库，变成可自然语言提问的问答系统——
 答案**附原文链接**，检索不到就**拒答**而不是编造。
 
-知识库**只由爬虫构建**：没有上传入口，1594 篇全部来自官网公开栏目，**每一块都能追溯到
+知识库**只由爬虫构建**：没有上传入口，1597 篇全部来自官网公开栏目，**每一块都能追溯到
 一个具体 URL**。系统因此可以说清自己知道什么、不知道什么——这正是它能放心拒答的前提。
 
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?style=flat&logo=fastapi&logoColor=white)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.3-FF6B6B?style=flat)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat&logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-196%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-216%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > ⚠️ 本系统为个人学习项目，**非河南工学院官方应用**。
@@ -97,7 +97,7 @@ HTML → 纯文本（动易 CMS / JSP 模板适配，按栏目配选择器）
    ▼
 paraphrase-multilingual-MiniLM-L12-v2 向量化
    ▼
-ChromaDB（collection: my_rag_collection，7833 块）
+ChromaDB（collection: my_rag_collection，7853 块）
 ```
 
 > **这条链路不只跑一次**：服务运行期间每天 `10:00` 自动增量重跑一遍（爬虫按 URL 去重，
@@ -226,7 +226,7 @@ python app_fastapi.py       # http://127.0.0.1:8000
 ### 5. 测试
 
 ```bash
-python -m pytest tests/ -v      # 196 条，零网络
+python -m pytest tests/ -v      # 216 条，零网络
 ```
 
 ---
@@ -665,7 +665,7 @@ python eval_score.py eval_results_baseline_topk8.json --out eval_score_topk8.md
 ## 测试
 
 ```bash
-python -m pytest tests/ -v      # 196 条，零网络
+python -m pytest tests/ -v      # 216 条，零网络
 ```
 
 | 测试文件 | 条数 | 内容 |
@@ -673,10 +673,12 @@ python -m pytest tests/ -v      # 196 条，零网络
 | `test_recall_guard.py` | 30 | 召回自检：快通过 / 三种去向 / 环 / **终止性** / 判官故障兜底 |
 | `test_vector_store.py` | 20 | `VectorStore` 增删查、相似度检索（读临时 Chroma） |
 | `test_text_splitter.py` | 15 | 递归切分器（含 `sanitize_privacy` 隐私脱敏） |
+| `test_hybrid_retriever.py` | 12 | RRF 融合保留 `vector_distance`；爬取后 BM25 单例必须置空重建 |
+| `test_prompt_injection.py` | 11 | 注入防线：引导词不能吞校名、计算器拒绝代码执行、检索片段不可信规则 |
 | `test_stream_gate.py` | 10 | 首句净化：逐字喂与整段喂结果一致（切片边界不影响） |
-| `test_hybrid_retriever.py` | 9 | RRF 融合保留 `vector_distance`，含「BM25 第一名污染 distance」机理 |
 | `test_out_of_kb_guard.py` | 8 | 库外闸门两层各自的分工（纯字符串） |
-| `test_prompt_injection.py` | 10 | 注入防线：引导词不能吞校名、计算器拒绝代码执行、未知工具不执行 |
+| `test_content_recheck.py` | 8 | URL 不变、正文被改：哈希比对 + **先嵌新块后删旧块** |
+| `test_html_parser_remove_keywords.py` | 8 | 导航块删除：保住 `searchstyle…`，不误删 `research`/`photonews` |
 | `test_eval_verify.py` | 10 | 事实核对器：日期/数字/链接的落地与漏判边界 |
 | `test_time_range.py` | 8 | 相对时间解析（昨天/上周/上月/最近 N 天） |
 | `test_list_entry_regressions.py` | 7 | 列表页日期提取：日期链接合并、裸文本、中文前缀、文章链接不能当分页 |
@@ -691,7 +693,7 @@ python -m pytest tests/ -v      # 196 条，零网络
 | `test_auth.py` | 20 | 注册 / 登录 / 会话签名与过期 / 额度原子扣减 |
 | `test_audit.py` | 14 | 问答审计落库、幂等、截断、工具配对、导出、保留期清理 |
 
-> 合计 = `pytest --collect-only` 的 196。**表要逐文件列全，不能拿"其余 N 条"一裹**——
+> 合计 = `pytest --collect-only` 的 216。**表要逐文件列全，不能拿"其余 N 条"一裹**——
 > 曾经这么裹过一次，漏掉的正好是一整个文件（29 条），表里的和顺口写的数字差了 29，
 > 而没人看得出差在哪。逐文件列全，加不起来就会当场暴露。
 
@@ -872,7 +874,7 @@ rag_chat/
 │   ├── js/                 # api / store / render / sidebar / chat / main / login
 │   ├── vendor/             # marked + lucide（本地托管，不依赖 CDN）
 │   └── admin.html          # 管理面板（库统计 / 爬虫 / 问答审计）
-├── tests/                  # pytest 149 条
+├── tests/                  # pytest 216 条
 ├── docs/                   # 改进记录（累计变更日志，论文写作素材）
 ├── requirements.txt
 └── .env.example

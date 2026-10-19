@@ -43,6 +43,7 @@ from app_backend import (
     AgentLoop, ThinkingEvent, ToolCallEvent, ToolResultEvent,
     TextEvent, DoneEvent, ErrorEvent,
 )
+from src.hybrid_retriever import reset_bm25_retriever
 from auth import auth_router, optional_user, require_user, daily_quota_limit
 from audit import (
     QATrace, record_qa_trace, query_audit, export_audit_rows,
@@ -609,13 +610,21 @@ async def _run_scrape_and_flush(pages: int, trigger: str = "manual") -> None:
     try:
         async with _scrape_lock:
             result = await run_scraper_pipeline(max_pages=pages)
-        # 爬虫入库后知识库已变化，旧查询缓存可能过时，清空
+        # 爬虫入库后知识库已变化：
+        # 1) BM25 是进程内一次性建的倒排索引，必须置空重建，否则新文章只有向量路能搜到；
+        # 2) 旧查询缓存可能过时，清空。
+        # 没有新块时（绝大多数日常增量）不重建，省掉一次几秒~十几秒的索引构建。
+        if result.get("total_chunks", 0) > 0:
+            reset_bm25_retriever()
         await _flush_query_cache()
         logger.info(
-            "爬虫任务完成 [%s]: 文章 %d 篇, 分块 %d, 错误 %d 条, 耗时 %.1f 分钟",
+            "爬虫任务完成 [%s]: 新文章 %d 篇, 分块 %d, 变更复检 %d 篇/%d 篇更新, "
+            "错误 %d 条, 耗时 %.1f 分钟",
             trigger,
             result.get("total_articles", 0),
             result.get("total_chunks", 0),
+            result.get("total_checked", 0),
+            result.get("total_updated", 0),
             len(result.get("errors", [])),
             (time.monotonic() - t0) / 60,
         )

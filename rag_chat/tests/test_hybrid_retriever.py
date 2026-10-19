@@ -87,3 +87,67 @@ def test_top_n截断():
     ranked = [_vec(f"块{i}", 0.1 * i) for i in range(1, 11)]
 
     assert len(rrf_fuse(ranked, [], top_n=3)) == 3
+
+
+# ── BM25 单例失效（定时增量爬取之后） ─────────────────────────────
+# 定时爬取会往 Chroma 写新块，但 BM25 是**进程内一次性建好的倒排索引**。
+# 不置空的话，新文章在服务重启前只有向量路能召回，RRF 的两路输入不一致。
+
+class _FakeCollection:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def get(self, include=None):
+        return {"documents": list(self._docs), "metadatas": [{} for _ in self._docs]}
+
+
+def test_reset后下次get按当前collection重建(monkeypatch):
+    """reset 必须真正丢弃旧索引，重建时读到爬取后的新 collection。"""
+    import src.hybrid_retriever as hr
+
+    built = []
+
+    def fake_build(self, collection):
+        built.append(list(collection.get()["documents"]))
+        self._corpus = list(collection.get()["documents"])
+        self._bm25 = object()  # 非 None 即视为可用，绕开 jieba/rank_bm25
+        return True
+
+    monkeypatch.setattr(hr.Bm25Retriever, "build", fake_build)
+    monkeypatch.setattr(hr, "_bm25_retriever", None)
+
+    old = hr.get_bm25_retriever(_FakeCollection(["旧文章块"]))
+    hr.reset_bm25_retriever()
+    new = hr.get_bm25_retriever(_FakeCollection(["旧文章块", "新文章块"]))
+
+    assert new is not old, "reset 后必须新建实例，否则新块永远搜不到"
+    assert built == [["旧文章块"], ["旧文章块", "新文章块"]]
+    assert new._corpus == ["旧文章块", "新文章块"]
+
+
+def test_reset是幂等的且能让构建失败后重试(monkeypatch):
+    """构建失败时单例保持 None；reset 对 None 不抛异常，下次访问重新尝试。"""
+    import src.hybrid_retriever as hr
+
+    monkeypatch.setattr(hr.Bm25Retriever, "build", lambda self, c: False)
+    monkeypatch.setattr(hr, "_bm25_retriever", None)
+
+    assert hr.get_bm25_retriever(_FakeCollection(["块"])) is None
+    hr.reset_bm25_retriever()
+    hr.reset_bm25_retriever()
+
+
+def test_爬虫入库后接线了BM25重置():
+    """app_fastapi 的重依赖无法在单测里 import，这里钉住接线本身。
+
+    条件必须是 total_chunks > 0：日常增量经常 0 篇，重建一次要几秒到十几秒。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app_fastapi.py").read_text(encoding="utf-8")
+
+    assert 'if result.get("total_chunks", 0) > 0:' in src
+    assert "reset_bm25_retriever()" in src
+    idx_if = src.index('if result.get("total_chunks", 0) > 0:')
+    idx_call = src.index("reset_bm25_retriever()")
+    assert idx_if < idx_call, "重置必须在条件分支内"
